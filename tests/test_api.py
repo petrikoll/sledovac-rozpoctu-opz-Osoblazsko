@@ -57,6 +57,25 @@ def test_hydration_ignores_payment_for_missing_project(monkeypatch):
     assert target.payments == {}
 
 
+def test_change_proposal_never_uses_informational_total_as_donor(monkeypatch):
+    project = client.post("/api/projects", json={"project_code": "CZ.P", "project_name": "P", "recipient_name": "P"}).json()
+    common = {"planned_future_spending": 0, "minimum_remaining_amount": 0,
+              "transfer_locked": False, "donor_priority": 100, "is_leaf": True}
+    rows = [
+        {**common, "code": "3", "category": "informational", "total_amount": 1000000, "cumulative_spent": 0},
+        {**common, "code": "1.1.1.1.2", "category": "direct", "total_amount": 100000, "cumulative_spent": 10000},
+        {**common, "code": "1.1.1.1.3", "category": "direct", "total_amount": 100000, "cumulative_spent": 143477.20},
+    ]
+    import app.main as main
+    monkeypatch.setattr(main, "budget_status", lambda *_args, **_kwargs: rows)
+
+    proposal = client.post(f"/api/projects/{project['project_id']}/change-proposals/generate", json={}).json()
+
+    assert proposal["transfers"]
+    assert all(transfer["source_code"] != "3" for transfer in proposal["transfers"])
+    assert proposal["transfers"][0]["source_code"] == "1.1.1.1.2"
+
+
 def test_budget_change_rejects_even_one_haler_difference(monkeypatch):
     project = client.post("/api/projects", json={"project_code": "CZ.CH", "project_name": "Změna", "recipient_name": "P"}).json()
     with open("samples/Export_2026-07-11_084920.xlsx", "rb") as f:

@@ -418,13 +418,14 @@ def import_budget_change(project_id: str, body: dict, user=Depends(require_edito
 
 @app.post("/api/projects/{project_id}/change-proposals/generate")
 def generate_proposal(project_id: str, body: dict, user=Depends(require_editor)):
-    project(project_id); supplied = body.get("items", [])
-    if supplied: items = [TransferCandidate(**x) for x in supplied]
-    else:
-        items = [TransferCandidate(code=x["code"], budget=x["total_amount"], spent=x["cumulative_spent"],
-            planned=x["planned_future_spending"], minimum_remaining=x["minimum_remaining_amount"],
-            locked=x["transfer_locked"], donor_priority=x["donor_priority"]) for x in budget_status(project_id, user=user)
-            if x["is_leaf"] and x["category"] != "lump_sum"]
+    project(project_id)
+    # Přesouvat lze pouze mezi skutečnými koncovými položkami přímých
+    # výdajů. Součtové/informační řádky (např. kód 3), paušál a
+    # nezpůsobilé výdaje nejsou samostatným zdrojem rozpočtového přesunu.
+    items = [TransferCandidate(code=x["code"], budget=x["total_amount"], spent=x["cumulative_spent"],
+        planned=x["planned_future_spending"], minimum_remaining=x["minimum_remaining_amount"],
+        locked=x["transfer_locked"], donor_priority=x["donor_priority"]) for x in budget_status(project_id, user=user)
+        if x["is_leaf"] and x["category"] == "direct"]
     transfers = propose_transfers(items, Decimal(str(body.get("reserve_rate", 0))))
     deficits = [{"code": x.code, "amount": x.spent-x.budget} for x in items if x.spent > x.budget]
     return {"proposal_id": str(uuid4()), "deficits": deficits, "transfers": transfers,
