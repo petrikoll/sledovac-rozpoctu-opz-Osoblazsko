@@ -1097,6 +1097,11 @@ function BudgetChange({
             </div>
           ) : (
             <>
+              {!proposal.balanced && (
+                <div className="alert">
+                  Sesterské položky nemají dostatečnou rezervu. Automatický návrh proto nepokrývá celé přečerpání; o přesunu z jiné kapitoly musí rozhodnout uživatel.
+                </div>
+              )}
               <div className="table-wrap"><table>
                 <thead>
                   <tr>
@@ -1115,11 +1120,13 @@ function BudgetChange({
                   ))}
                 </tbody>
               </table></div>
-              <button className="secondary" type="button" onClick={() =>
-                downloadApi(`/projects/${id}/change-proposals/${proposal.proposal_id}/download`, "Navrh_zmeny_rozpoctu.xlsx")
-                  .catch((e) => setError(e instanceof Error ? e.message : "Soubor se nepodařilo stáhnout."))}>
-                Stáhnout upravený rozpočet XLSX
-              </button>
+              {proposal.balanced && (
+                <button className="secondary" type="button" onClick={() =>
+                  downloadApi(`/projects/${id}/change-proposals/${proposal.proposal_id}/download`, "Navrh_zmeny_rozpoctu.xlsx")
+                    .catch((e) => setError(e instanceof Error ? e.message : "Soubor se nepodařilo stáhnout."))}>
+                  Stáhnout upravený rozpočet XLSX
+                </button>
+              )}
             </>
           )}
         </div>

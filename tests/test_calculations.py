@@ -22,6 +22,20 @@ def test_transfers_are_balanced_and_respect_lock():
     assert all(x.source_code != "C" for x in transfers)
 
 
+def test_transfers_do_not_cross_budget_branches():
+    items = [
+        TransferCandidate(code="1.1.1.1.3", budget=Decimal("100"), spent=Decimal("140")),
+        TransferCandidate(code="1.1.1.1.2", budget=Decimal("100"), spent=Decimal("50")),
+        TransferCandidate(code="1.1.4.1.1", budget=Decimal("1000"), spent=Decimal("0")),
+    ]
+
+    transfers = propose_transfers(items)
+
+    assert len(transfers) == 1
+    assert transfers[0].source_code == "1.1.1.1.2"
+    assert transfers[0].target_code == "1.1.1.1.3"
+
+
 def test_final_settlement():
     result = final_settlement(Decimal("949613"), Decimal("379845.2"), Decimal("0"), Decimal("0"), Decimal(".95"), Decimal("1258286.4"), Decimal("0"))
     assert result["provider_entitlement"] == Decimal("1262985.29")

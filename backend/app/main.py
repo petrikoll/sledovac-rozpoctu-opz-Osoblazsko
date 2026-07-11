@@ -430,13 +430,14 @@ def generate_proposal(project_id: str, body: dict, user=Depends(require_editor))
     deficits = [{"code": x.code, "amount": x.spent-x.budget} for x in items if x.spent > x.budget]
     total_transfer = sum((x.amount for x in transfers), Decimal("0"))
     total_deficit = sum((x["amount"] for x in deficits), Decimal("0"))
+    balanced = total_transfer == total_deficit
     proposal_id = str(uuid4())
     p = project(project_id)
     active = next((b["analysis"] for b in repo.budgets[project_id] if b["version_id"] == p.active_budget_version_id), None)
     analyses[proposal_id] = {"kind": "transfer_proposal", "project_id": project_id,
-        "analysis": active, "transfers": transfers}
+        "analysis": active, "transfers": transfers, "balanced": balanced}
     return {"proposal_id": proposal_id, "deficits": deficits, "transfers": transfers,
-            "total_transfer": total_transfer, "balanced": total_transfer == total_deficit}
+            "total_transfer": total_transfer, "balanced": balanced}
 
 
 @app.get("/api/projects/{project_id}/change-proposals/{proposal_id}/download")
@@ -445,8 +446,8 @@ def download_proposal(project_id: str, proposal_id: str, user=Depends(require_ed
     cached = analyses.get(proposal_id)
     if not cached or cached.get("kind") != "transfer_proposal" or cached.get("project_id") != project_id:
         raise HTTPException(404, "Návrh přesunů nebyl nalezen. Vytvořte jej znovu.")
-    if not cached.get("analysis") or not cached.get("transfers"):
-        raise HTTPException(409, "Návrh neobsahuje žádné proveditelné přesuny.")
+    if not cached.get("analysis") or not cached.get("transfers") or not cached.get("balanced"):
+        raise HTTPException(409, "Návrh nepokrývá celý deficit bezpečnými přesuny.")
     data = export_transfer_proposal(cached["analysis"], cached["transfers"])
     return StreamingResponse(BytesIO(data), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": 'attachment; filename="Navrh_zmeny_rozpoctu.xlsx"'})
