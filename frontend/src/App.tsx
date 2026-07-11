@@ -135,7 +135,7 @@ const Nav = () => {
   return (
     <header>
       <Link to="/" className="brand">
-        OPZ+ <span>Sledovač rozpočtu</span>
+        OPZ+ <span>Sledovač rozpočtu Osoblažsko</span>
       </Link>
       <nav>
         <Link to="/">Projekty</Link>
