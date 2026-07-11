@@ -1005,11 +1005,7 @@ function BudgetOverview({
       <div className="budget-overview-head">
         <div>
           <h2>Čerpání rozpočtu po položkách</h2>
-          <p>
-            {historical
-              ? `Historický pohled na verzi ${selectedIndex + 1}. Čerpání je promítnuto proti tehdejším částkám.`
-              : `Schválené čerpání je rozdělené do ${periods.length} monitorovacích období. Pomlčka označuje období bez nahrané žádosti o platbu.`}
-          </p>
+          {historical && <p>Historický pohled na verzi {selectedIndex + 1}. Čerpání je promítnuto proti tehdejším částkám.</p>}
         </div>
         <div className="budget-tools">
           <label className="version-select">
@@ -1047,13 +1043,14 @@ function BudgetOverview({
               <th>Rozpočet</th>
               {periods.map((p) => (
                 <th
-                  className="period-col"
+                  className={`period-col ${projectCode === SD2_PROJECT_CODE ? "sd2-period-button" : ""}`}
                   key={p}
                   onClick={() => projectCode === SD2_PROJECT_CODE && setSd2Period(Number(p))}
                   role={projectCode === SD2_PROJECT_CODE ? "button" : undefined}
-                  title={`Monitorovací období ${p}`}
+                  title={projectCode === SD2_PROJECT_CODE ? `Otevřít podklad SD2 pro ${p}. období` : `Monitorovací období ${p}`}
                 >
-                  {p}. období
+                  <span>{p}. období</span>
+                  {projectCode === SD2_PROJECT_CODE && <small>Vyplnit SD2</small>}
                 </th>
               ))}
               <th>Kumulativně</th>
