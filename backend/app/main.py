@@ -373,8 +373,12 @@ async def upload_sd2_attachment(project_id: str, period: int, file: UploadFile =
     data = await file.read(MAX_SIZE + 1)
     if len(data) > MAX_SIZE: raise HTTPException(413, "Soubor je větší než povolených 20 MB.")
     if not file_storage: raise HTTPException(503, "Uložiště souborů není nastavené.")
+    try:
+        drive_file_id = file_storage.upload(f"SD2_{project_id}_{period}_{file.filename}", data, file.content_type or "application/octet-stream")
+    except Exception as exc:
+        raise HTTPException(502, f"Archiv se nepodařilo uložit do Google Drive: {exc}")
     attachment = {"attachment_id": str(uuid4()), "project_id": project_id, "monitoring_period": period,
-        "file_name": file.filename, "drive_file_id": file_storage.upload(f"SD2_{project_id}_{period}_{file.filename}", data, file.content_type or "application/octet-stream"),
+        "file_name": file.filename, "drive_file_id": drive_file_id,
         "uploaded_at": datetime.utcnow().isoformat(), "uploaded_by": user["email"]}
     repo.sd2_attachments[project_id].append(attachment)
     if google_repo: google_repo.append_records("SD2_PRILOHY", [attachment])

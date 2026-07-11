@@ -23,4 +23,5 @@ class GoogleDriveStorage:
 
     def upload(self, name: str, data: bytes, mime: str) -> str:
         media = MediaIoBaseUpload(BytesIO(data), mimetype=mime, resumable=False)
-        return self.api.create(body={"name": name, "parents": [self.folder_id]}, media_body=media, fields="id").execute()["id"]
+        return self.api.create(body={"name": name, "parents": [self.folder_id]}, media_body=media,
+                               fields="id", supportsAllDrives=True).execute()["id"]
