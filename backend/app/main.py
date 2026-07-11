@@ -41,6 +41,9 @@ elif os.getenv("ENVIRONMENT", "development") == "development":
     file_storage = LocalFileStorage(os.path.join(os.getcwd(), ".uploads"))
 analyses: dict[str, dict] = {}
 MAX_SIZE = 20 * 1024 * 1024
+RECIPIENT_ONLY_USERS = {
+    "starosta@divcihrad.cz": "osoblažský cech, z.ú.",
+}
 
 
 def current_user(authorization: str | None = Header(default=None)) -> dict:
@@ -74,8 +77,13 @@ def require_editor(user=Depends(current_user)) -> dict:
 
 def can_view_project(project_id: str, user: dict) -> bool:
     if user.get("role") == "admin": return True
+    email = user.get("email", "").lower()
+    recipient_only = RECIPIENT_ONLY_USERS.get(email)
+    if recipient_only is not None:
+        item = repo.project_data.get(project_id)
+        return bool(item and item.recipient_name.strip().casefold() == recipient_only)
     allowed = repo.project_access.get(project_id, set())
-    return not allowed or user.get("email", "").lower() in allowed
+    return not allowed or email in allowed
 
 
 def project(project_id: str, user: dict | None = None) -> Project:
