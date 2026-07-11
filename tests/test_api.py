@@ -46,7 +46,7 @@ def test_hydration_ignores_payment_for_missing_project(monkeypatch):
             "payment_request_id": "orphan", "project_id": "missing",
             "sequence_number": "1", "request_number": "orphan/1",
         }],
-        "UTRATA_PAUSALU": [], "SPOLUFINANCOVANI": [], "SD2_MESICE": [], "IMPORT_LOG": [],
+        "UTRATA_PAUSALU": [], "SPOLUFINANCOVANI": [], "SD2_MESICE": [], "SD2_PRILOHY": [], "IMPORT_LOG": [],
     }
     google = object.__new__(GoogleSheetsRepository)
     monkeypatch.setattr(google, "_records", lambda sheet: records[sheet])

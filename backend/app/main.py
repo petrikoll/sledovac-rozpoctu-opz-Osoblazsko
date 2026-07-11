@@ -19,12 +19,14 @@ from .calculations import final_settlement, lump_sum_metrics, propose_transfers
 from .models import CofinancingEntry, LumpSumEntry, Project, ProjectCreate, Sd2MonthlyEntry, TransferCandidate
 from .pdf_parser import extract_budget_code, parse_payment_request
 from .repository import GoogleSheetsRepository, InMemoryRepository
+from .storage import GoogleDriveStorage, LocalFileStorage
 from .xlsx_parser import export_transfer_proposal, export_with_formulas, parse_budget, validate_budget_structure
 
 app = FastAPI(title="Sledovač čerpání rozpočtu OPZ+", version="1.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173").split(","), allow_methods=["*"], allow_headers=["*"])
 repo = InMemoryRepository()
 google_repo = None
+file_storage = None
 user_roles: dict[str, str] = {}
 active_user: ContextVar[dict | None] = ContextVar("active_user", default=None)
 if os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") and os.getenv("GOOGLE_SPREADSHEET_ID"):
@@ -33,6 +35,10 @@ if os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") and os.getenv("GOOGLE_SPREADSHEET_ID
     google_repo.hydrate(repo)
     user_roles = {str(row.get("email", "")).lower(): str(row.get("role", "user"))
                   for row in google_repo._records("USERS") if google_repo._bool(row.get("active", True))}
+    if os.getenv("GOOGLE_DRIVE_FOLDER_ID"):
+        file_storage = GoogleDriveStorage(os.environ["GOOGLE_DRIVE_FOLDER_ID"], os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
+elif os.getenv("ENVIRONMENT", "development") == "development":
+    file_storage = LocalFileStorage(os.path.join(os.getcwd(), ".uploads"))
 analyses: dict[str, dict] = {}
 MAX_SIZE = 20 * 1024 * 1024
 
@@ -349,6 +355,30 @@ def save_sd2_monthly(project_id: str, body: dict, user=Depends(require_editor)):
     if google_repo and appended:
         google_repo.append_records("SD2_MESICE", [{**entry.model_dump(), "project_id": project_id, "created_at": datetime.utcnow().isoformat(), "created_by": user["email"]} for entry in appended])
     return [entry for entry in existing if entry.monitoring_period == period]
+
+
+@app.get("/api/projects/{project_id}/sd2-attachments")
+def sd2_attachments(project_id: str, period: int, user=Depends(current_user)):
+    p = project(project_id, user)
+    if p.project_code != SD2_PROJECT_CODE: raise HTTPException(404, "Přílohy SD2 nejsou pro tento projekt zapnuté.")
+    return [value for value in repo.sd2_attachments[project_id] if int(value.get("monitoring_period", 0)) == period]
+
+
+@app.post("/api/projects/{project_id}/sd2-attachments", status_code=201)
+async def upload_sd2_attachment(project_id: str, period: int, file: UploadFile = File(...), user=Depends(require_editor)):
+    p = project(project_id)
+    if p.project_code != SD2_PROJECT_CODE: raise HTTPException(404, "Přílohy SD2 nejsou pro tento projekt zapnuté.")
+    if not file.filename or not file.filename.lower().endswith((".zip", ".rar")):
+        raise HTTPException(415, "Povolen je pouze archiv ZIP nebo RAR.")
+    data = await file.read(MAX_SIZE + 1)
+    if len(data) > MAX_SIZE: raise HTTPException(413, "Soubor je větší než povolených 20 MB.")
+    if not file_storage: raise HTTPException(503, "Uložiště souborů není nastavené.")
+    attachment = {"attachment_id": str(uuid4()), "project_id": project_id, "monitoring_period": period,
+        "file_name": file.filename, "drive_file_id": file_storage.upload(f"SD2_{project_id}_{period}_{file.filename}", data, file.content_type or "application/octet-stream"),
+        "uploaded_at": datetime.utcnow().isoformat(), "uploaded_by": user["email"]}
+    repo.sd2_attachments[project_id].append(attachment)
+    if google_repo: google_repo.append_records("SD2_PRILOHY", [attachment])
+    return attachment
 
 
 @app.get("/api/projects/{project_id}/dashboard")
