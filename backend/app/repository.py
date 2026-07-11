@@ -17,6 +17,7 @@ from .models import BudgetAnalysis, BudgetItem
 
 SHEETS = {
     "USERS": ["email", "role", "active", "created_at"],
+    "PROJEKT_UZIVATELE": ["project_id", "email", "role", "active", "created_at", "created_by"],
     "PROJEKTY": ["project_id", "project_code", "project_name", "recipient_name", "financing_type", "total_budget", "public_funding_rate", "lump_sum_rate", "lump_sum_base_code", "current_monitoring_period", "total_monitoring_periods", "active_budget_version_id", "status", "created_at", "updated_at", "created_by"],
     "VERZE_ROZPOCTU": ["budget_version_id", "project_id", "version_number", "version_label", "effective_date", "total_amount", "source_file_name", "source_drive_file_id", "source_sha256", "change_description", "is_active", "created_at", "created_by"],
     "POLOZKY_ROZPOCTU": ["budget_item_id", "project_id", "budget_version_id", "code", "name", "parent_code", "level", "unit_custom", "unit_price", "unit_count", "total_amount", "percentage", "support_combination", "unit_preset", "unit_catalog", "category", "is_leaf", "is_new", "previous_amount", "transfer_locked", "minimum_remaining_amount", "planned_future_spending", "donor_priority", "source_row_number"],
@@ -45,6 +46,7 @@ class InMemoryRepository(Repository):
         self.payments: dict[str, list[PaymentRequest]] = defaultdict(list)
         self.lump_entries: dict[str, list[LumpSumEntry]] = defaultdict(list)
         self.cofinancing_entries: dict[str, list[CofinancingEntry]] = defaultdict(list)
+        self.project_access: dict[str, set[str]] = defaultdict(set)
         self.import_log: list[dict[str, Any]] = []
 
     def projects(self): return list(self.project_data.values())
@@ -128,7 +130,10 @@ class GoogleSheetsRepository(Repository):
 
     def hydrate(self, target: InMemoryRepository) -> None:
         """Načte dávkově trvalý stav do rychlého aplikačního modelu."""
-        target.project_data.clear(); target.budgets.clear(); target.payments.clear(); target.lump_entries.clear(); target.cofinancing_entries.clear()
+        target.project_data.clear(); target.budgets.clear(); target.payments.clear(); target.lump_entries.clear(); target.cofinancing_entries.clear(); target.project_access.clear()
+        for record in self._records("PROJEKT_UZIVATELE"):
+            if self._bool(record.get("active", True)) and record.get("project_id") and record.get("email"):
+                target.project_access[str(record["project_id"])].add(str(record["email"]).lower())
         for record in self._records("PROJEKTY"):
             project = Project(**{key: record[key] for key in Project.model_fields if record.get(key) not in ("", None)})
             target.project_data[project.project_id] = project

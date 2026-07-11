@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+from contextvars import ContextVar
 from datetime import datetime
 from decimal import Decimal
 from io import BytesIO
@@ -25,6 +26,7 @@ app.add_middleware(CORSMiddleware, allow_origins=os.getenv("CORS_ORIGINS", "http
 repo = InMemoryRepository()
 google_repo = None
 user_roles: dict[str, str] = {}
+active_user: ContextVar[dict | None] = ContextVar("active_user", default=None)
 if os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") and os.getenv("GOOGLE_SPREADSHEET_ID"):
     google_repo = GoogleSheetsRepository(os.environ["GOOGLE_SPREADSHEET_ID"], os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
     google_repo.ensure_schema()
@@ -38,7 +40,7 @@ MAX_SIZE = 20 * 1024 * 1024
 def current_user(authorization: str | None = Header(default=None)) -> dict:
     client_id = os.getenv("GOOGLE_CLIENT_ID")
     if not client_id and os.getenv("ENVIRONMENT", "development") == "development":
-        return {"email": "local@localhost", "role": "admin"}
+        user = {"email": "local@localhost", "role": "admin"}; active_user.set(user); return user
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Přihlaste se Google účtem.")
     try:
@@ -49,7 +51,7 @@ def current_user(authorization: str | None = Header(default=None)) -> dict:
     if info.get("email", "").lower() not in allowed:
         raise HTTPException(403, "Tento e-mail nemá povolený přístup.")
     email = info["email"].lower()
-    return {"email": email, "role": user_roles.get(email, "user")}
+    user = {"email": email, "role": user_roles.get(email, "user")}; active_user.set(user); return user
 
 
 def require_admin(user=Depends(current_user)) -> dict:
@@ -64,8 +66,17 @@ def require_editor(user=Depends(current_user)) -> dict:
     return user
 
 
-def project(project_id: str) -> Project:
+def can_view_project(project_id: str, user: dict) -> bool:
+    if user.get("role") == "admin": return True
+    allowed = repo.project_access.get(project_id, set())
+    return not allowed or user.get("email", "").lower() in allowed
+
+
+def project(project_id: str, user: dict | None = None) -> Project:
     if project_id not in repo.project_data:
+        raise HTTPException(404, "Projekt nebyl nalezen.")
+    viewer = user or active_user.get()
+    if viewer is not None and not can_view_project(project_id, viewer):
         raise HTTPException(404, "Projekt nebyl nalezen.")
     return repo.project_data[project_id]
 
@@ -86,7 +97,7 @@ def health(): return {"status": "ok", "time": datetime.utcnow().isoformat()}
 
 
 @app.get("/api/projects")
-def get_projects(user=Depends(current_user)): return repo.projects()
+def get_projects(user=Depends(current_user)): return [p for p in repo.projects() if can_view_project(p.project_id, user)]
 
 
 @app.post("/api/projects", status_code=201)
@@ -95,18 +106,18 @@ def create_project(data: ProjectCreate, user=Depends(require_admin)):
 
 
 @app.get("/api/projects/{project_id}")
-def get_project(project_id: str, user=Depends(current_user)): return project(project_id)
+def get_project(project_id: str, user=Depends(current_user)): return project(project_id, user)
 
 
 @app.patch("/api/projects/{project_id}")
 def patch_project(project_id: str, changes: dict, user=Depends(require_admin)):
-    value = project(project_id).model_copy(update={k: v for k, v in changes.items() if k in Project.model_fields})
+    value = project(project_id, user).model_copy(update={k: v for k, v in changes.items() if k in Project.model_fields})
     value.updated_at = datetime.utcnow(); repo.save_project(value); return value
 
 
 @app.post("/api/projects/{project_id}/budgets/analyze")
 async def analyze_budget(project_id: str, file: UploadFile = File(...), user=Depends(require_editor)):
-    project(project_id); data = await checked_file(file, ".xlsx", {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/octet-stream"})
+    project(project_id, user); data = await checked_file(file, ".xlsx", {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/octet-stream"})
     try: result = parse_budget(data, file.filename)
     except Exception as exc: raise HTTPException(422, str(exc))
     token = str(uuid4()); result.token = token; analyses[token] = {"kind": "budget", "project_id": project_id, "data": data, "result": result}
