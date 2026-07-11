@@ -96,6 +96,10 @@ async def checked_file(upload: UploadFile, extension: str, mime: set[str]) -> by
 def health(): return {"status": "ok", "time": datetime.utcnow().isoformat()}
 
 
+@app.get("/api/me")
+def me(user=Depends(current_user)): return user
+
+
 @app.get("/api/projects")
 def get_projects(user=Depends(current_user)): return [p for p in repo.projects() if can_view_project(p.project_id, user)]
 
@@ -164,6 +168,31 @@ def budgets(project_id: str, user=Depends(current_user)):
 def budget(project_id: str, version_id: str, user=Depends(current_user)):
     project(project_id, user)
     return next((x["analysis"] for x in repo.budgets[project_id] if x["version_id"] == version_id), None) or (_ for _ in ()).throw(HTTPException(404, "Verze rozpočtu nebyla nalezena."))
+
+
+@app.delete("/api/projects/{project_id}/budgets/{version_id}", status_code=204)
+def delete_budget(project_id: str, version_id: str, user=Depends(require_admin)):
+    p = project(project_id, user)
+    versions = repo.budgets[project_id]
+    removed = next((value for value in versions if value["version_id"] == version_id), None)
+    if not removed:
+        raise HTTPException(404, "Verze rozpočtu nebyla nalezena.")
+    versions.remove(removed)
+    if p.active_budget_version_id == version_id:
+        replacement = versions[-1] if versions else None
+        p.active_budget_version_id = replacement["version_id"] if replacement else None
+        p.total_budget = replacement["analysis"].total_amount if replacement else Decimal("0")
+        if replacement:
+            p.lump_sum_rate = replacement["analysis"].lump_sum_rate or p.lump_sum_rate
+            p.lump_sum_base_code = replacement["analysis"].lump_sum_base_code or p.lump_sum_base_code
+        p.updated_at = datetime.utcnow()
+    if google_repo:
+        google_repo.delete_records("POLOZKY_ROZPOCTU", "budget_version_id", version_id)
+        google_repo.delete_record("VERZE_ROZPOCTU", "budget_version_id", version_id)
+        google_repo.update_record("PROJEKTY", "project_id", project_id, {
+            "active_budget_version_id": p.active_budget_version_id or "", "total_budget": p.total_budget,
+            "lump_sum_rate": p.lump_sum_rate, "lump_sum_base_code": p.lump_sum_base_code,
+            "updated_at": p.updated_at})
 
 
 @app.get("/api/projects/{project_id}/budgets/{version_id}/download")

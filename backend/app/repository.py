@@ -114,6 +114,20 @@ class GoogleSheetsRepository(Repository):
                 return
         raise ValueError(f"Záznam {key_value} v listu {sheet} nebyl nalezen.")
 
+    def delete_records(self, sheet: str, key: str, key_value: str) -> int:
+        """Smaže všechny odpovídající řádky; maže odzadu, aby se neposouvala čísla řádků."""
+        metadata = self.api.get(spreadsheetId=self.id).execute()
+        sheet_id = next(s["properties"]["sheetId"] for s in metadata["sheets"] if s["properties"]["title"] == sheet)
+        headers = SHEETS[sheet]; key_col = headers.index(key)
+        rows = self.api.values().get(spreadsheetId=self.id, range=f"'{sheet}'!A2:AZ").execute().get("values", [])
+        row_numbers = [number for number, row in enumerate(rows, 2)
+                       if len(row) > key_col and str(row[key_col]) == str(key_value)]
+        if row_numbers:
+            requests = [{"deleteDimension": {"range": {"sheetId": sheet_id, "dimension": "ROWS",
+                "startIndex": number - 1, "endIndex": number}}} for number in reversed(row_numbers)]
+            self.api.batchUpdate(spreadsheetId=self.id, body={"requests": requests}).execute()
+        return len(row_numbers)
+
     def _records(self, sheet: str) -> list[dict[str, Any]]:
         headers = SHEETS[sheet]
         end = chr(64 + len(headers)) if len(headers) <= 26 else "AZ"

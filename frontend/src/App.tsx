@@ -70,6 +70,7 @@ type BudgetVersion = {
   file_name: string;
   total_amount: number;
 };
+type CurrentUser = { email: string; role: string };
 const CLIENT_ID =
   import.meta.env.VITE_GOOGLE_CLIENT_ID ||
   "812727560459-codfb0fu10agboif0lsjce3k6on4rj3d.apps.googleusercontent.com";
@@ -829,6 +830,12 @@ function BudgetOverview({
     queryKey: ["budget-versions", id],
     queryFn: () => api<BudgetVersion[]>(`/projects/${id}/budgets`),
   });
+  const me = useQuery({
+    queryKey: ["me"],
+    queryFn: () => api<CurrentUser>("/me"),
+  });
+  const qc = useQueryClient();
+  const [deleteError, setDeleteError] = useState("");
   const [selectedVersion, setSelectedVersion] = useState(activeVersionId ?? "");
   useEffect(() => {
     if (activeVersionId) setSelectedVersion(activeVersionId);
@@ -855,6 +862,22 @@ function BudgetOverview({
   const historical = Boolean(
     selectedVersion && effectiveActive && selectedVersion !== effectiveActive,
   );
+  async function removeSelectedVersion() {
+    if (!selectedVersion || !window.confirm("Opravdu chcete tuto verzi rozpočtu trvale smazat?")) return;
+    setDeleteError("");
+    try {
+      await api(`/projects/${id}/budgets/${selectedVersion}`, { method: "DELETE" });
+      setSelectedVersion("");
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["project", id] }),
+        qc.invalidateQueries({ queryKey: ["dashboard", id] }),
+        qc.invalidateQueries({ queryKey: ["budget-versions", id] }),
+        qc.invalidateQueries({ queryKey: ["budget-status", id] }),
+      ]);
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : "Rozpočet se nepodařilo smazat.");
+    }
+  }
   return (
     <section className="panel wide budget-overview">
       <div className="budget-overview-head">
@@ -886,8 +909,14 @@ function BudgetOverview({
           </label>
           <ImportBudget id={id} compact />
           <BudgetChange id={id} compact />
+          {me.data?.role === "admin" && selectedVersion && (
+            <button className="danger" type="button" onClick={removeSelectedVersion}>
+              Smazat verzi
+            </button>
+          )}
         </div>
       </div>
+      {deleteError && <p className="error">{deleteError}</p>}
       <div className="table-wrap">
         <table>
           <thead>
