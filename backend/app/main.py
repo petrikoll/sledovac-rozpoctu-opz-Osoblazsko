@@ -16,7 +16,7 @@ from google.auth.transport import requests
 from google.oauth2 import id_token
 
 from .calculations import final_settlement, lump_sum_metrics, propose_transfers
-from .models import CofinancingEntry, LumpSumEntry, Project, ProjectCreate, TransferCandidate
+from .models import CofinancingEntry, LumpSumEntry, Project, ProjectCreate, Sd2MonthlyEntry, TransferCandidate
 from .pdf_parser import extract_budget_code, parse_payment_request
 from .repository import GoogleSheetsRepository, InMemoryRepository
 from .xlsx_parser import export_transfer_proposal, export_with_formulas, parse_budget, validate_budget_structure
@@ -314,6 +314,43 @@ def delete_cofinancing(project_id: str, entry_id: str, user=Depends(require_edit
     if google_repo: google_repo.delete_record("SPOLUFINANCOVANI", "cofinancing_entry_id", entry_id)
 
 
+SD2_PROJECT_CODE = "CZ.03.02.01/00/25_106/0006125"
+SD2_CODES = {"1.1.1.1", "1.1.1.2", "1.1.1.3", "1.1.2.1", "1.1.3.1"}
+
+
+@app.get("/api/projects/{project_id}/sd2-monthly")
+def sd2_monthly(project_id: str, period: int, user=Depends(current_user)):
+    p = project(project_id, user)
+    if p.project_code != SD2_PROJECT_CODE: raise HTTPException(404, "Měsíční podklad SD2 není pro tento projekt zapnutý.")
+    return [entry for entry in repo.sd2_entries[project_id] if entry.monitoring_period == period]
+
+
+@app.put("/api/projects/{project_id}/sd2-monthly")
+def save_sd2_monthly(project_id: str, body: dict, user=Depends(require_editor)):
+    p = project(project_id, user)
+    if p.project_code != SD2_PROJECT_CODE: raise HTTPException(404, "Měsíční podklad SD2 není pro tento projekt zapnutý.")
+    entries = [Sd2MonthlyEntry.model_validate(value) for value in body.get("entries", [])]
+    if not entries or any(entry.budget_item_code not in SD2_CODES for entry in entries):
+        raise HTTPException(422, "Neplatná položka podkladu SD2.")
+    period = entries[0].monitoring_period
+    if any(entry.monitoring_period != period for entry in entries): raise HTTPException(422, "Uložte najednou pouze jedno období.")
+    existing = repo.sd2_entries[project_id]
+    index = {(x.monitoring_period, x.month, x.budget_item_code): i for i, x in enumerate(existing)}
+    appended = []
+    for entry in entries:
+        if entry.budget_item_code == "1.1.3.1": entry.employer_contributions = Decimal("0")
+        key = (entry.monitoring_period, entry.month, entry.budget_item_code)
+        if key in index:
+            entry.sd2_entry_id = existing[index[key]].sd2_entry_id
+            existing[index[key]] = entry
+            if google_repo: google_repo.update_record("SD2_MESICE", "sd2_entry_id", entry.sd2_entry_id, entry.model_dump())
+        else:
+            existing.append(entry); appended.append(entry)
+    if google_repo and appended:
+        google_repo.append_records("SD2_MESICE", [{**entry.model_dump(), "project_id": project_id, "created_at": datetime.utcnow().isoformat(), "created_by": user["email"]} for entry in appended])
+    return [entry for entry in existing if entry.monitoring_period == period]
+
+
 @app.get("/api/projects/{project_id}/dashboard")
 def dashboard(project_id: str, user=Depends(current_user)):
     p = project(project_id); active = [x for x in repo.payments[project_id] if not x.is_advance_payment]
@@ -355,6 +392,14 @@ def budget_status(project_id: str, version_id: str | None = None, user=Depends(c
         if lump_item:
             spent[lump_item.code] += payment.approved_lump_sum
             periods[lump_item.code][period] = periods[lump_item.code].get(period, Decimal("0")) + payment.approved_lump_sum
+    submitted_periods = {max(1, payment.sequence_number - 1) for payment in repo.payments[project_id] if not payment.is_advance_payment}
+    for entry in repo.sd2_entries[project_id]:
+        if entry.monitoring_period in submitted_periods or entry.budget_item_code not in spent:
+            continue
+        amount = entry.total_amount
+        spent[entry.budget_item_code] += amount
+        period = str(entry.monitoring_period)
+        periods[entry.budget_item_code][period] = periods[entry.budget_item_code].get(period, Decimal("0")) + amount
     # Souhrny jsou vždy odvozené z bezprostředních potomků.
     for item in sorted(items, key=lambda x: x.level, reverse=True):
         if item.parent_code in spent:

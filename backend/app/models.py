@@ -128,6 +128,22 @@ class CofinancingEntry(BaseModel):
     note: str = Field(default="", max_length=200)
 
 
+class Sd2MonthlyEntry(BaseModel):
+    sd2_entry_id: str = Field(default_factory=lambda: str(uuid4()))
+    monitoring_period: int = Field(ge=1, le=4)
+    month: date
+    budget_item_code: str
+    gross_wage: Decimal = Decimal("0")
+    employer_contributions: Decimal = Decimal("0")
+    other_with_contributions: Decimal = Decimal("0")
+    other_without_contributions: Decimal = Decimal("0")
+    payment_date: date | None = None
+
+    @property
+    def total_amount(self) -> Decimal:
+        return self.gross_wage + self.employer_contributions + self.other_with_contributions + self.other_without_contributions
+
+
 class TransferCandidate(BaseModel):
     code: str
     budget: Decimal

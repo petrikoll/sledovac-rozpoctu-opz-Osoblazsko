@@ -11,7 +11,7 @@ from typing import Any
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-from .models import CofinancingEntry, LumpSumEntry, PaymentRequest, Project
+from .models import CofinancingEntry, LumpSumEntry, PaymentRequest, Project, Sd2MonthlyEntry
 from .models import BudgetAnalysis, BudgetItem
 
 
@@ -26,6 +26,7 @@ SHEETS = {
     "PLATBY_A_ZALOHY": ["cash_flow_id", "project_id", "payment_request_id", "cash_flow_type", "payment_date", "amount", "note", "created_at"],
     "UTRATA_PAUSALU": ["lump_sum_entry_id", "project_id", "monitoring_period", "entry_date", "entry_mode", "entered_amount", "calculated_period_delta", "cumulative_spent", "note", "created_at", "created_by"],
     "SPOLUFINANCOVANI": ["cofinancing_entry_id", "project_id", "entry_date", "amount", "note", "created_at", "created_by"],
+    "SD2_MESICE": ["sd2_entry_id", "project_id", "monitoring_period", "month", "budget_item_code", "gross_wage", "employer_contributions", "other_with_contributions", "other_without_contributions", "payment_date", "created_at", "created_by"],
     "NAVRHY_ZMEN": ["proposal_id", "project_id", "source_budget_version_id", "proposal_status", "calculation_mode", "reserve_rate", "total_deficit", "total_transfer", "created_at", "created_by", "note"],
     "NAVRHY_ZMEN_RADKY": ["proposal_line_id", "proposal_id", "source_item_code", "target_item_code", "amount", "reason", "source_available_before", "source_available_after", "target_balance_before", "target_balance_after"],
     "IMPORT_LOG": ["import_id", "project_id", "import_type", "source_file_name", "source_sha256", "status", "error_code", "message", "created_at", "created_by"],
@@ -46,6 +47,7 @@ class InMemoryRepository(Repository):
         self.payments: dict[str, list[PaymentRequest]] = defaultdict(list)
         self.lump_entries: dict[str, list[LumpSumEntry]] = defaultdict(list)
         self.cofinancing_entries: dict[str, list[CofinancingEntry]] = defaultdict(list)
+        self.sd2_entries: dict[str, list[Sd2MonthlyEntry]] = defaultdict(list)
         self.project_access: dict[str, set[str]] = defaultdict(set)
         self.import_log: list[dict[str, Any]] = []
 
@@ -144,7 +146,7 @@ class GoogleSheetsRepository(Repository):
 
     def hydrate(self, target: InMemoryRepository) -> None:
         """Načte dávkově trvalý stav do rychlého aplikačního modelu."""
-        target.project_data.clear(); target.budgets.clear(); target.payments.clear(); target.lump_entries.clear(); target.cofinancing_entries.clear(); target.project_access.clear()
+        target.project_data.clear(); target.budgets.clear(); target.payments.clear(); target.lump_entries.clear(); target.cofinancing_entries.clear(); target.sd2_entries.clear(); target.project_access.clear()
         for record in self._records("PROJEKT_UZIVATELE"):
             if self._bool(record.get("active", True)) and record.get("project_id") and record.get("email"):
                 target.project_access[str(record["project_id"])].add(str(record["email"]).lower())
@@ -189,4 +191,8 @@ class GoogleSheetsRepository(Repository):
         for record in self._records("SPOLUFINANCOVANI"):
             values = {key: record.get(key) for key in CofinancingEntry.model_fields if record.get(key) not in ("", None)}
             target.cofinancing_entries[str(record["project_id"])].append(CofinancingEntry(**values))
+        for record in self._records("SD2_MESICE"):
+            values = {key: record.get(key) for key in Sd2MonthlyEntry.model_fields if record.get(key) not in ("", None)}
+            if record.get("project_id"):
+                target.sd2_entries[str(record["project_id"])].append(Sd2MonthlyEntry(**values))
         target.import_log = self._records("IMPORT_LOG")

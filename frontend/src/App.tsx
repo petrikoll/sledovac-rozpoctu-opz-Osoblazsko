@@ -71,6 +71,7 @@ type BudgetVersion = {
   total_amount: number;
 };
 type CurrentUser = { email: string; role: string };
+type Sd2Entry = { sd2_entry_id?: string; monitoring_period: number; month: string; budget_item_code: string; gross_wage: number; employer_contributions: number; other_with_contributions: number; other_without_contributions: number; payment_date?: string | null };
 const CLIENT_ID =
   import.meta.env.VITE_GOOGLE_CLIENT_ID ||
   "812727560459-codfb0fu10agboif0lsjce3k6on4rj3d.apps.googleusercontent.com";
@@ -817,14 +818,36 @@ function LumpSumSpending({ id }: { id: string }) {
     </div>
   );
 }
+const SD2_PROJECT_CODE = "CZ.03.02.01/00/25_106/0006125";
+const SD2_CODES = ["1.1.1.1", "1.1.1.2", "1.1.1.3", "1.1.2.1", "1.1.3.1"];
+function Sd2MonthlyDialog({ id, period, onClose }: { id: string; period: number; onClose: () => void }) {
+  const qc = useQueryClient();
+  const { data = [] } = useQuery({ queryKey: ["sd2-monthly", id, period], queryFn: () => api<Sd2Entry[]>(`/projects/${id}/sd2-monthly?period=${period}`) });
+  const [changes, setChanges] = useState<Record<string, string | number>>({});
+  const [saving, setSaving] = useState(false); const [error, setError] = useState("");
+  const monthFor = (offset: number) => new Date(Date.UTC(2026, 6 + (period - 1) * 6 + offset, 1)).toISOString().slice(0, 10);
+  const read = (code: string, month: string, field: keyof Sd2Entry) => changes[`${code}|${month}|${field}`] ?? data.find(x => x.budget_item_code === code && x.month === month)?.[field] ?? (field === "payment_date" ? "" : 0);
+  const set = (code: string, month: string, field: keyof Sd2Entry, value: string) => setChanges(current => ({ ...current, [`${code}|${month}|${field}`]: value }));
+  async function save() {
+    setSaving(true); setError("");
+    try {
+      const entries: Sd2Entry[] = SD2_CODES.flatMap(code => Array.from({ length: 6 }, (_, i) => { const month = monthFor(i); const old = data.find(x => x.budget_item_code === code && x.month === month); return { sd2_entry_id: old?.sd2_entry_id, monitoring_period: period, month, budget_item_code: code, gross_wage: Number(read(code, month, "gross_wage") || 0), employer_contributions: code === "1.1.3.1" ? 0 : Number(read(code, month, "employer_contributions") || 0), other_with_contributions: Number(read(code, month, "other_with_contributions") || 0), other_without_contributions: Number(read(code, month, "other_without_contributions") || 0), payment_date: String(read(code, month, "payment_date") || "") || null }; }));
+      await api(`/projects/${id}/sd2-monthly`, { method: "PUT", body: JSON.stringify({ entries }) });
+      await qc.invalidateQueries({ queryKey: ["budget-status", id] }); onClose();
+    } catch (e) { setError(e instanceof Error ? e.message : "Podklad SD2 se nepodařilo uložit."); } finally { setSaving(false); }
+  }
+  return <div className="sd2-overlay" role="dialog" aria-modal="true"><section className="sd2-dialog"><div className="sd2-dialog-head"><div><h2>Podklad SD2 — {period}. období</h2><p>Měsíční údaje se zobrazí v příslušném období jako podklad před ŽoP.</p></div><button className="secondary" onClick={onClose}>Zavřít</button></div>{error && <div className="alert">{error}</div>}<div className="sd2-grid-wrap"><table className="sd2-grid"><thead><tr><th>Položka</th>{Array.from({ length: 6 }, (_, i) => <th key={i}>{new Date(`${monthFor(i)}T00:00:00Z`).toLocaleDateString("cs-CZ", { month: "long", year: "numeric" })}</th>)}</tr></thead><tbody>{SD2_CODES.map(code => <tr key={code}><th>{code}</th>{Array.from({ length: 6 }, (_, i) => { const month = monthFor(i); const noContributions = code === "1.1.3.1"; return <td key={month}><label>Hrubá mzda / odměna<input type="number" step="0.01" value={read(code, month, "gross_wage")} onChange={e => set(code, month, "gross_wage", e.target.value)} /></label>{!noContributions && <label>Odvody zaměstnavatele<input type="number" step="0.01" value={read(code, month, "employer_contributions")} onChange={e => set(code, month, "employer_contributions", e.target.value)} /></label>}<label>Jiné výdaje s odvody<input type="number" step="0.01" value={read(code, month, "other_with_contributions")} onChange={e => set(code, month, "other_with_contributions", e.target.value)} /></label><label>Jiné výdaje bez odvodů<input type="number" step="0.01" value={read(code, month, "other_without_contributions")} onChange={e => set(code, month, "other_without_contributions", e.target.value)} /></label><label>Datum úhrady<input type="date" value={read(code, month, "payment_date")} onChange={e => set(code, month, "payment_date", e.target.value)} /></label></td>; })}</tr>)}</tbody></table></div><div className="sd2-save"><button onClick={save} disabled={saving}>{saving ? "Ukládám…" : "Uložit podklad SD2"}</button></div></section></div>;
+}
 function BudgetOverview({
   id,
   periodCount,
   activeVersionId,
+  projectCode,
 }: {
   id: string;
   periodCount: number;
   activeVersionId?: string | null;
+  projectCode?: string;
 }) {
   const versions = useQuery({
     queryKey: ["budget-versions", id],
@@ -836,6 +859,7 @@ function BudgetOverview({
   });
   const qc = useQueryClient();
   const [deleteError, setDeleteError] = useState("");
+  const [sd2Period, setSd2Period] = useState<number | null>(null);
   const [selectedVersion, setSelectedVersion] = useState(activeVersionId ?? "");
   useEffect(() => {
     if (activeVersionId) setSelectedVersion(activeVersionId);
@@ -927,6 +951,8 @@ function BudgetOverview({
                 <th
                   className="period-col"
                   key={p}
+                  onClick={() => projectCode === SD2_PROJECT_CODE && setSd2Period(Number(p))}
+                  role={projectCode === SD2_PROJECT_CODE ? "button" : undefined}
                   title={`Monitorovací období ${p}`}
                 >
                   {p}. období
@@ -976,6 +1002,7 @@ function BudgetOverview({
           </tbody>
         </table>
       </div>
+      {sd2Period && <Sd2MonthlyDialog id={id} period={sd2Period} onClose={() => setSd2Period(null)} />}
     </section>
   );
 }
@@ -1281,7 +1308,7 @@ function Dashboard() {
         </section>
       )}
       <FinalSettlement id={id} />
-      <BudgetOverview id={id} periodCount={p.data.total_monitoring_periods} />
+      <BudgetOverview id={id} periodCount={p.data.total_monitoring_periods} projectCode={p.data.project_code} />
       <LumpSumSpending id={id} />
       <PaymentRequests id={id} />
     </main>
