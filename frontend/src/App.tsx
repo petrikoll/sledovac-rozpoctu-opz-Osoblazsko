@@ -1102,6 +1102,9 @@ function BudgetChange({
                   Reálně nevyčerpané položky nemají dostatečnou rezervu k pokrytí celého přečerpání.
                 </div>
               )}
+              {proposal.feasibility_errors?.map((message: string) => (
+                <div className="alert" key={message}>{message}</div>
+              ))}
               <div className="table-wrap"><table>
                 <thead>
                   <tr>
@@ -1124,7 +1127,7 @@ function BudgetChange({
                 <button className="secondary" type="button" onClick={() =>
                   downloadApi(`/projects/${id}/change-proposals/${proposal.proposal_id}/download`, "Navrh_zmeny_rozpoctu.xlsx")
                     .catch((e) => setError(e instanceof Error ? e.message : "Soubor se nepodařilo stáhnout."))}>
-                  Stáhnout upravený rozpočet XLSX
+                  {proposal.feasible ? "Stáhnout proveditelný rozpočet XLSX" : "Stáhnout kontrolní návrh XLSX"}
                 </button>
               )}
             </>

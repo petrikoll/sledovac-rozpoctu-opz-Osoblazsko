@@ -436,10 +436,30 @@ def generate_proposal(project_id: str, body: dict, user=Depends(require_editor))
     proposal_id = str(uuid4())
     p = project(project_id)
     active = next((b["analysis"] for b in repo.budgets[project_id] if b["version_id"] == p.active_budget_version_id), None)
+    deltas: dict[str, Decimal] = {}
+    for transfer in transfers:
+        deltas[transfer.source_code] = deltas.get(transfer.source_code, Decimal("0")) - transfer.amount
+        deltas[transfer.target_code] = deltas.get(transfer.target_code, Decimal("0")) + transfer.amount
+    feasibility_errors = []
+    if active:
+        for item in active.items:
+            if item.code not in deltas or not item.unit_count or item.unit_count <= 0:
+                continue
+            if item.unit_count != item.unit_count.quantize(Decimal("0.01")):
+                feasibility_errors.append(
+                    f"Položka {item.code}: původní počet jednotek má více než dvě desetinná místa.")
+                continue
+            proposed_total = item.total_amount + deltas[item.code]
+            proposed_unit_price = proposed_total / item.unit_count
+            if proposed_unit_price != proposed_unit_price.quantize(Decimal("0.01")):
+                feasibility_errors.append(
+                    f"Položka {item.code}: při nezměněném počtu {item.unit_count} nelze novou cenu za jednotku vyjádřit na haléře.")
+    feasible = balanced and not feasibility_errors
     analyses[proposal_id] = {"kind": "transfer_proposal", "project_id": project_id,
-        "analysis": active, "transfers": transfers, "balanced": balanced}
+        "analysis": active, "transfers": transfers, "balanced": balanced, "feasible": feasible}
     return {"proposal_id": proposal_id, "deficits": deficits, "transfers": transfers,
-            "total_transfer": total_transfer, "balanced": balanced}
+            "total_transfer": total_transfer, "balanced": balanced, "feasible": feasible,
+            "feasibility_errors": feasibility_errors}
 
 
 @app.get("/api/projects/{project_id}/change-proposals/{proposal_id}/download")

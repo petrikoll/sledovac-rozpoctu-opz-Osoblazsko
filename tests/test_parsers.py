@@ -71,8 +71,13 @@ def test_transfer_proposal_export_contains_audit_columns():
     assert ws.cell(1, 13).value == "Navrhovaná změna"
     assert "do 1.1.1.2" in ws.cell(rows["1.1.1.1"], 13).value
     assert "z 1.1.1.1" in ws.cell(rows["1.1.1.2"], 13).value
-    assert "-43477.20" in ws.cell(rows["1.1.1.1"], 14).value
-    assert "+43477.20" in ws.cell(rows["1.1.1.2"], 14).value
+    assert ws.cell(1, 14).value == "Navrhovaný počet jednotek"
+    assert ws.cell(1, 15).value == "Navrhovaná cena za jednotku"
+    assert ws.cell(1, 16).value == "Navrhovaná částka"
+    assert ws.cell(rows["1.1.1.1"], 16).value == f"=ROUND(N{rows['1.1.1.1']}*O{rows['1.1.1.1']},2)"
+    assert "ROUND" in ws.cell(rows["1.1.1.1"], 15).value
+    assert "-43477.20" in ws.cell(rows["1.1.1.1"], 15).value
+    assert "+43477.20" in ws.cell(rows["1.1.1.2"], 15).value
 
 
 def test_payment_samples():

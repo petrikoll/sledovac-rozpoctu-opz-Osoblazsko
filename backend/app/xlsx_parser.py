@@ -223,10 +223,14 @@ def export_transfer_proposal(analysis: BudgetAnalysis, transfers: list[Transfer]
     """Doplní k rozpočtu navržené přesuny a nové kontrolní částky."""
     wb = openpyxl.load_workbook(BytesIO(export_with_formulas(analysis)))
     ws = wb["Export"]
-    note_col, proposed_col = 13, 14
+    note_col, count_col, price_col, proposed_col, check_col = 13, 14, 15, 16, 17
     ws.cell(1, note_col, "Navrhovaná změna")
+    ws.cell(1, count_col, "Navrhovaný počet jednotek")
+    ws.cell(1, price_col, "Navrhovaná cena za jednotku")
     ws.cell(1, proposed_col, "Navrhovaná částka")
-    for cell in (ws.cell(1, note_col), ws.cell(1, proposed_col)):
+    ws.cell(1, check_col, "Kontrola")
+    for cell in (ws.cell(1, note_col), ws.cell(1, count_col), ws.cell(1, price_col),
+                 ws.cell(1, proposed_col), ws.cell(1, check_col)):
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="1F4E78")
     row_by_code = {str(ws.cell(row, 1).value): row for row in range(2, ws.max_row + 1)}
@@ -243,17 +247,30 @@ def export_transfer_proposal(analysis: BudgetAnalysis, transfers: list[Transfer]
         delta = sum((t.amount for t in incoming.get(item.code, [])), Decimal("0")) - sum(
             (t.amount for t in outgoing.get(item.code, [])), Decimal("0"))
         children = [x for x in analysis.items if x.parent_code == item.code]
+        ws.cell(row, count_col, f"=E{row}" if item.unit_count is not None else "")
         if item.category == "lump_sum" and analysis.lump_sum_base_code:
-            ws.cell(row, proposed_col, f"=N{row_by_code[analysis.lump_sum_base_code]}*I{row}/100")
+            ws.cell(row, proposed_col, f"=P{row_by_code[analysis.lump_sum_base_code]}*I{row}/100")
         elif children:
-            ws.cell(row, proposed_col, "=" + "+".join(f"N{row_by_code[x.code]}" for x in children))
+            ws.cell(row, proposed_col, "=" + "+".join(f"P{row_by_code[x.code]}" for x in children))
+        elif item.unit_count and item.unit_count > 0:
+            desired = f"F{row}{delta:+.2f}" if delta else f"F{row}"
+            ws.cell(row, price_col, f"=ROUND(({desired})/N{row},2)")
+            ws.cell(row, proposed_col, f"=ROUND(N{row}*O{row},2)")
+            ws.cell(row, check_col, f'=IF(P{row}=ROUND({desired},2),"OK","NELZE: počet × cena nedá požadovanou částku")')
         elif delta:
             ws.cell(row, proposed_col, f"=F{row}{delta:+.2f}")
         else:
             ws.cell(row, proposed_col, f"=F{row}")
+        if not ws.cell(row, check_col).value:
+            ws.cell(row, check_col, "OK")
+        ws.cell(row, count_col).number_format = '0.00'
+        ws.cell(row, price_col).number_format = '#,##0.00 "Kč"'
         ws.cell(row, proposed_col).number_format = '#,##0.00 "Kč"'
     ws.column_dimensions["M"].width = 55
-    ws.column_dimensions["N"].width = 22
+    ws.column_dimensions["N"].width = 24
+    ws.column_dimensions["O"].width = 25
+    ws.column_dimensions["P"].width = 22
+    ws.column_dimensions["Q"].width = 42
     output = BytesIO()
     wb.save(output)
     return output.getvalue()
