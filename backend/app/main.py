@@ -149,11 +149,13 @@ def import_budget(project_id: str, body: dict, user=Depends(require_editor)):
 
 @app.get("/api/projects/{project_id}/budgets")
 def budgets(project_id: str, user=Depends(current_user)):
+    project(project_id, user)
     return [{"version_id": x["version_id"], **x["analysis"].model_dump(exclude={"items"})} for x in repo.budgets[project_id]]
 
 
 @app.get("/api/projects/{project_id}/budgets/{version_id}")
 def budget(project_id: str, version_id: str, user=Depends(current_user)):
+    project(project_id, user)
     return next((x["analysis"] for x in repo.budgets[project_id] if x["version_id"] == version_id), None) or (_ for _ in ()).throw(HTTPException(404, "Verze rozpočtu nebyla nalezena."))
 
 
@@ -295,8 +297,9 @@ def dashboard(project_id: str, user=Depends(current_user)):
 
 
 @app.get("/api/projects/{project_id}/budget-status")
-def budget_status(project_id: str, user=Depends(current_user)):
-    p = project(project_id); version = next((b for b in repo.budgets[project_id] if b["version_id"] == p.active_budget_version_id), None)
+def budget_status(project_id: str, version_id: str | None = None, user=Depends(current_user)):
+    p = project(project_id, user); selected_version = version_id or p.active_budget_version_id
+    version = next((b for b in repo.budgets[project_id] if b["version_id"] == selected_version), None)
     if not version: return []
     items = version["analysis"].items; by_code = {item.code: item for item in items}
     spent: dict[str, Decimal] = {code: Decimal("0") for code in by_code}; periods: dict[str, dict[str, Decimal]] = {code: {} for code in by_code}
@@ -330,7 +333,7 @@ async def analyze_budget_change(project_id: str, file: UploadFile = File(...), u
     except Exception as exc: raise HTTPException(422, str(exc))
     current = next((b["analysis"] for b in repo.budgets[project_id] if b["version_id"] == p.active_budget_version_id), None)
     if not current: raise HTTPException(409, "Projekt nemá aktivní rozpočet.")
-    old = {x.code: x for x in current.items}; status = {x["code"]: x for x in budget_status(project_id, user)}; changes = []
+    old = {x.code: x for x in current.items}; status = {x["code"]: x for x in budget_status(project_id, user=user)}; changes = []
     for code in sorted(set(old) | {x.code for x in result.items}):
         before = old.get(code); after = next((x for x in result.items if x.code == code), None)
         old_amount = before.total_amount if before else Decimal("0"); new_amount = after.total_amount if after else Decimal("0")
@@ -363,7 +366,7 @@ def generate_proposal(project_id: str, body: dict, user=Depends(require_editor))
     else:
         items = [TransferCandidate(code=x["code"], budget=x["total_amount"], spent=x["cumulative_spent"],
             planned=x["planned_future_spending"], minimum_remaining=x["minimum_remaining_amount"],
-            locked=x["transfer_locked"], donor_priority=x["donor_priority"]) for x in budget_status(project_id, user)
+            locked=x["transfer_locked"], donor_priority=x["donor_priority"]) for x in budget_status(project_id, user=user)
             if x["is_leaf"] and x["category"] != "lump_sum"]
     transfers = propose_transfers(items, Decimal(str(body.get("reserve_rate", 0))))
     deficits = [{"code": x.code, "amount": x.spent-x.budget} for x in items if x.spent > x.budget]
