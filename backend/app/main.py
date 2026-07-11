@@ -44,6 +44,9 @@ MAX_SIZE = 20 * 1024 * 1024
 RECIPIENT_ONLY_USERS = {
     "starosta@divcihrad.cz": "osoblažský cech, z.ú.",
 }
+PROJECT_ONLY_USERS = {
+    "mb_ucetni@seznam.cz": "CZ.03.02.01/00/25_106/0006125",
+}
 
 
 def current_user(authorization: str | None = Header(default=None)) -> dict:
@@ -78,6 +81,10 @@ def require_editor(user=Depends(current_user)) -> dict:
 def can_view_project(project_id: str, user: dict) -> bool:
     if user.get("role") == "admin": return True
     email = user.get("email", "").lower()
+    project_only = PROJECT_ONLY_USERS.get(email)
+    if project_only is not None:
+        item = repo.project_data.get(project_id)
+        return bool(item and item.project_code == project_only)
     recipient_only = RECIPIENT_ONLY_USERS.get(email)
     if recipient_only is not None:
         item = repo.project_data.get(project_id)
