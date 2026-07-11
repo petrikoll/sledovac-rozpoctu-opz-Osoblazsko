@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import unicodedata
 import zipfile
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
@@ -121,7 +122,11 @@ def parse_budget(source: str | Path | bytes, file_name: str | None = None) -> Bu
         level = int(level_value) if level_value is not None else len(code.split("."))
         parent = ".".join(code.split(".")[:-1]) or None
         pct = decimal(row[8])
-        category = "lump_sum" if "pauš" in name_value.lower() else "direct"
+        normalized_name = name_value.lower()
+        ascii_name = "".join(char for char in unicodedata.normalize("NFKD", normalized_name)
+                             if not unicodedata.combining(char))
+        category = "lump_sum" if ("pauš" in normalized_name or "pausal" in ascii_name
+                                  or "neprim" in ascii_name) else "direct"
         items.append(BudgetItem(code=code, name=name_value, parent_code=parent, level=level,
             unit_custom=str(row[2]) if row[2] is not None else None, unit_price=decimal(row[3]),
             unit_count=decimal(row[4]), total_amount=decimal(row[5]) or Decimal("0"), percentage=pct,
