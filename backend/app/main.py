@@ -102,7 +102,10 @@ def get_projects(user=Depends(current_user)): return [p for p in repo.projects()
 
 @app.post("/api/projects", status_code=201)
 def create_project(data: ProjectCreate, user=Depends(require_admin)):
-    value = Project(**data.model_dump()); repo.save_project(value); return value
+    value = Project(**data.model_dump()); repo.save_project(value)
+    if google_repo:
+        google_repo.append_records("PROJEKTY", [{**value.model_dump(), "created_by": user["email"]}])
+    return value
 
 
 @app.get("/api/projects/{project_id}")
@@ -111,8 +114,12 @@ def get_project(project_id: str, user=Depends(current_user)): return project(pro
 
 @app.patch("/api/projects/{project_id}")
 def patch_project(project_id: str, changes: dict, user=Depends(require_admin)):
-    value = project(project_id, user).model_copy(update={k: v for k, v in changes.items() if k in Project.model_fields})
-    value.updated_at = datetime.utcnow(); repo.save_project(value); return value
+    allowed = {k: v for k, v in changes.items() if k in Project.model_fields}
+    value = project(project_id, user).model_copy(update=allowed)
+    value.updated_at = datetime.utcnow(); repo.save_project(value)
+    if google_repo:
+        google_repo.update_record("PROJEKTY", "project_id", project_id, {**allowed, "updated_at": value.updated_at})
+    return value
 
 
 @app.post("/api/projects/{project_id}/budgets/analyze")
