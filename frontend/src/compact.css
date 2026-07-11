@@ -40,17 +40,18 @@ input, select { padding: 8px 9px; }
 .sd2-dialog-head { display: flex; justify-content: space-between; gap: 16px; align-items: start; }
 .sd2-attachments { display: grid; gap: 4px; max-width: 330px; }
 .sd2-attachments small { font-size: 10px; color: #52655c; }
+.sd2-upload-notice { color: #176a4a !important; font-weight: 700; }
 .sd2-dialog-head h2 { margin: 0; }
 .sd2-dialog-head p { margin: 5px 0 14px; color: #52655c; }
 .sd2-grid-wrap { overflow: auto; border: 1px solid #d5dfd9; }
-.sd2-grid { min-width: 1500px; border-collapse: collapse; }
-.sd2-grid th, .sd2-grid td { padding: 7px; vertical-align: top; border-bottom: 1px solid #dce5df; border-right: 1px solid #dce5df; }
-.sd2-grid th:first-child { position: sticky; left: 0; z-index: 2; min-width: 120px; background: #edf3ef; }
+.sd2-grid { width: 100%; min-width: 0; table-layout: fixed; border-collapse: collapse; }
+.sd2-grid th, .sd2-grid td { padding: 5px; vertical-align: top; border-bottom: 1px solid #dce5df; border-right: 1px solid #dce5df; }
+.sd2-grid th:first-child { position: sticky; left: 0; z-index: 2; width: 110px; min-width: 110px; background: #edf3ef; }
 .sd2-grid th:first-child b { display: block; color: #0d4f7c; font-size: 15px; line-height: 1.15; }
 .sd2-grid th:first-child small { display: block; margin-top: 5px; color: #176a9b; font-size: 12px; font-weight: 700; line-height: 1.25; }
-.sd2-grid td { min-width: 205px; }
-.sd2-grid label { display: block; margin: 0 0 5px; color: #3b5147; font-size: 10px; font-weight: 700; }
-.sd2-grid input { width: 100%; box-sizing: border-box; margin-top: 2px; padding: 5px 6px; font-size: 12px; }
+.sd2-grid td { min-width: 0; }
+.sd2-grid label { display: block; margin: 0 0 4px; color: #3b5147; font-size: 9px; font-weight: 700; line-height: 1.1; }
+.sd2-grid input { width: 100%; min-width: 0; box-sizing: border-box; margin-top: 2px; padding: 4px 5px; font-size: 11px; }
 .sd2-save { display: flex; justify-content: flex-end; margin-top: 14px; }
 .budget-overview .inactive-period { color: #9ba6a0; text-align: center; font-size: 15px !important; }
 .budget-overview-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
