@@ -1,0 +1,14 @@
+.env
+__pycache__/
+.pytest_cache/
+*.pyc
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+.coverage
+tmp/
+# Lokální spouštěcí konfigurace obsahuje cestu k servisnímu klíči.
+tools/start_google_local.ps1
+# Reálné projektové dokumenty obsahují osobní a bankovní údaje.
+samples/*.pdf
+samples/*.xlsx

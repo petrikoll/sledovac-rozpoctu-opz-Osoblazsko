@@ -1,0 +1,12 @@
+.table-wrap { overflow: auto; margin: 18px 0; }
+.table-wrap table { width: 100%; border-collapse: collapse; white-space: nowrap; }
+.table-wrap th, .table-wrap td { padding: 11px 12px; border-bottom: 1px solid #e2e8e4; text-align: right; font-size: 14px; }
+.table-wrap th:first-child, .table-wrap td:first-child { text-align: left; }
+.table-wrap th { background: #edf3ef; color: #315a48; position: sticky; top: 0; }
+.overdrawn { background: #fde8e8; color: #8b1f1f; }
+.warning-row { background: #fff6df; }
+.change-actions { display: flex; align-items: end; gap: 18px; flex-wrap: wrap; }
+.change-actions label { margin: 0; }
+.row-actions { display: flex !important; flex-direction: row !important; gap: 6px; }
+.row-actions button { padding: 7px 10px; font-size: 12px; }
+.danger { background: #f5d4d4 !important; color: #8b1f1f !important; }
