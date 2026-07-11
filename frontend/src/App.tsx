@@ -1025,12 +1025,16 @@ function BudgetOverview({
               ))}
             </select>
           </label>
-          <ImportBudget id={id} compact />
-          <BudgetChange id={id} compact />
-          {me.data?.role === "admin" && selectedVersion && (
-            <button className="danger" type="button" onClick={removeSelectedVersion}>
-              Smazat verzi
-            </button>
+          {me.data?.role === "admin" && (
+            <>
+              <ImportBudget id={id} compact />
+              <BudgetChange id={id} compact />
+              {selectedVersion && (
+                <button className="danger" type="button" onClick={removeSelectedVersion}>
+                  Smazat verzi
+                </button>
+              )}
+            </>
           )}
         </div>
       </div>
