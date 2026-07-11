@@ -174,8 +174,11 @@ class GoogleSheetsRepository(Repository):
         for record in self._records("ZADOSTI_O_PLATBU"):
             values = {key: record.get(key) for key in PaymentRequest.model_fields if key != "lines" and record.get(key) not in ("", None)}
             parent = target.project_data.get(str(record["project_id"]))
-            if parent:
-                values.update(project_code=parent.project_code, project_name=parent.project_name, recipient_name=parent.recipient_name)
+            # Starší ruční zásahy mohou v tabulce zanechat ŽoP bez existujícího
+            # projektu. Takový záznam nelze v aplikaci zobrazit a nesmí zablokovat start.
+            if not parent:
+                continue
+            values.update(project_code=parent.project_code, project_name=parent.project_name, recipient_name=parent.recipient_name)
             for key in ("is_final_payment", "is_advance_payment"):
                 if key in values: values[key] = self._bool(values[key])
             request = PaymentRequest(**values, lines=lines_by_payment.get(str(record["payment_request_id"]), []))

@@ -36,6 +36,27 @@ def test_admin_can_delete_budget_version():
     assert Decimal(updated["total_budget"]) == Decimal("0")
 
 
+def test_hydration_ignores_payment_for_missing_project(monkeypatch):
+    from app.repository import GoogleSheetsRepository, InMemoryRepository
+
+    records = {
+        "PROJEKT_UZIVATELE": [], "PROJEKTY": [], "POLOZKY_ROZPOCTU": [],
+        "VERZE_ROZPOCTU": [], "RADKY_ZOP": [],
+        "ZADOSTI_O_PLATBU": [{
+            "payment_request_id": "orphan", "project_id": "missing",
+            "sequence_number": "1", "request_number": "orphan/1",
+        }],
+        "UTRATA_PAUSALU": [], "SPOLUFINANCOVANI": [], "IMPORT_LOG": [],
+    }
+    google = object.__new__(GoogleSheetsRepository)
+    monkeypatch.setattr(google, "_records", lambda sheet: records[sheet])
+    target = InMemoryRepository()
+
+    google.hydrate(target)
+
+    assert target.payments == {}
+
+
 def test_budget_change_rejects_even_one_haler_difference(monkeypatch):
     project = client.post("/api/projects", json={"project_code": "CZ.CH", "project_name": "Změna", "recipient_name": "P"}).json()
     with open("samples/Export_2026-07-11_084920.xlsx", "rb") as f:
