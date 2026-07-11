@@ -495,6 +495,31 @@ def budget_status(project_id: str, version_id: str | None = None, user=Depends(c
         for item in items]
 
 
+@app.get("/api/projects/{project_id}/worker-assignments")
+def worker_assignments(project_id: str, user=Depends(current_user)):
+    project(project_id, user)
+    return repo.worker_assignments[project_id]
+
+
+@app.put("/api/projects/{project_id}/worker-assignments")
+def save_worker_assignments(project_id: str, body: dict, user=Depends(require_admin)):
+    project(project_id, user)
+    records = []
+    for item in body.get("assignments", []):
+        code = str(item.get("budget_item_code", "")).strip()
+        names = str(item.get("employee_names", "")).strip()
+        if code and names:
+            records.append({"worker_assignment_id": str(uuid4()), "project_id": project_id,
+                "budget_item_code": code, "employee_names": names,
+                "updated_at": datetime.utcnow().isoformat(), "updated_by": user["email"]})
+    repo.worker_assignments[project_id] = records
+    if google_repo:
+        google_repo.delete_records("PRACOVNICI_ROZPOCTU", "project_id", project_id)
+        if records:
+            google_repo.append_records("PRACOVNICI_ROZPOCTU", records)
+    return records
+
+
 @app.post("/api/projects/{project_id}/budget-change/analyze")
 async def analyze_budget_change(project_id: str, file: UploadFile = File(...), user=Depends(require_editor)):
     p = project(project_id); data = await checked_file(file, ".xlsx", {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/octet-stream"})

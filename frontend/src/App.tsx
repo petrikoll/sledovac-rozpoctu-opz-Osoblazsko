@@ -72,6 +72,7 @@ type BudgetVersion = {
 };
 type CurrentUser = { email: string; role: string };
 type Sd2Entry = { sd2_entry_id?: string; monitoring_period: number; month: string; budget_item_code: string; gross_wage: number; employer_contributions: number; other_with_contributions: number; other_without_contributions: number; payment_date?: string | null };
+type WorkerAssignment = { budget_item_code: string; employee_names: string };
 const CLIENT_ID =
   import.meta.env.VITE_GOOGLE_CLIENT_ID ||
   "812727560459-codfb0fu10agboif0lsjce3k6on4rj3d.apps.googleusercontent.com";
@@ -936,6 +937,16 @@ function Sd2MonthlyDialogNew({ id, period, onClose }: { id: string; period: numb
   }
   return <div className="sd2-overlay" role="dialog" aria-modal="true"><section className="sd2-dialog"><div className="sd2-dialog-head"><div><h2>Podklad SD2 — {period}. období</h2><p>Měsíční údaje se zobrazí v příslušném období jako podklad před ŽoP.</p></div><div className="sd2-attachments">{driveToken ? <label className="upload-button">{uploading ? "Ukládám archiv…" : "Vybrat archiv ZIP / RAR"}<input type="file" accept=".zip,.rar" disabled={uploading} onChange={e => e.target.files?.[0] && upload(e.target.files[0])} /></label> : <button className="upload-button" onClick={connectDrive}>Připojit Google Drive</button>}{uploadNotice && <small className="sd2-upload-notice">{uploadNotice}</small>}</div><button className="secondary" onClick={onClose}>Zavřít</button></div>{error && <div className="alert">{error}</div>}<div className="sd2-grid-wrap"><table className="sd2-grid"><thead><tr><th>Položka</th>{months.map(month => <th key={month}>{new Date(`${month}T00:00:00Z`).toLocaleDateString("cs-CZ", { month: "long", year: "numeric" })}</th>)}</tr></thead><tbody>{SD2_CODES.map(code => <tr key={code}><th><b>{code}</b><small>{SD2_ITEM_NAMES[code]}</small></th>{months.map(month => { const noContributions = code === "1.1.3.1"; return <td key={month}><label>Hrubá mzda / odměna<input type="number" step="0.01" value={read(code, month, "gross_wage")} onChange={e => set(code, month, "gross_wage", e.target.value)} /></label>{!noContributions && <label>Odvody zaměstnavatele<input type="number" step="0.01" value={read(code, month, "employer_contributions")} onChange={e => set(code, month, "employer_contributions", e.target.value)} /></label>}<label>Jiné výdaje s odvody<input type="number" step="0.01" value={read(code, month, "other_with_contributions")} onChange={e => set(code, month, "other_with_contributions", e.target.value)} /></label><label>Jiné výdaje bez odvodů<input type="number" step="0.01" value={read(code, month, "other_without_contributions")} onChange={e => set(code, month, "other_without_contributions", e.target.value)} /></label><label>Datum úhrady<input type="date" value={read(code, month, "payment_date")} onChange={e => set(code, month, "payment_date", e.target.value)} /></label></td>; })}</tr>)}</tbody></table></div><div className="sd2-save"><button onClick={save} disabled={saving}>{saving ? "Ukládám…" : "Uložit podklad SD2"}</button></div></section></div>;
 }
+function BudgetWorkerSettings({ id, versionId, onClose }: { id: string; versionId?: string; onClose: () => void }) {
+  const qc = useQueryClient();
+  const { data: rows = [] } = useQuery({ queryKey: ["budget-status", id, versionId], queryFn: () => api<BudgetRow[]>(`/projects/${id}/budget-status${versionId ? `?version_id=${encodeURIComponent(versionId)}` : ""}`) });
+  const { data: saved = [] } = useQuery({ queryKey: ["worker-assignments", id], queryFn: () => api<WorkerAssignment[]>(`/projects/${id}/worker-assignments`) });
+  const [names, setNames] = useState<Record<string, string>>({}); const [saving, setSaving] = useState(false); const [error, setError] = useState("");
+  useEffect(() => setNames(Object.fromEntries(saved.map(item => [item.budget_item_code, item.employee_names]))), [saved]);
+  const positions = rows.filter(row => row.is_leaf && row.category === "direct");
+  async function save() { setSaving(true); setError(""); try { await api(`/projects/${id}/worker-assignments`, { method: "PUT", body: JSON.stringify({ assignments: positions.map(row => ({ budget_item_code: row.code, employee_names: names[row.code] || "" })) }) }); await qc.invalidateQueries({ queryKey: ["worker-assignments", id] }); onClose(); } catch (e) { setError(e instanceof Error ? e.message : "Nastavení se nepodařilo uložit."); } finally { setSaving(false); } }
+  return <div className="sd2-overlay" role="dialog" aria-modal="true"><section className="worker-settings"><div className="worker-settings-head"><div><h2>Nastavení pracovníků</h2><p>Doplňte jméno pracovníka nebo více jmen oddělených čárkou. Nastavení se později použije při načítání výplatních pásek.</p></div><button className="secondary" onClick={onClose}>Zavřít</button></div>{error && <div className="alert">{error}</div>}<div className="table-wrap"><table><thead><tr><th>Kód</th><th>Pozice / položka rozpočtu</th><th>Pracovník či pracovníci</th></tr></thead><tbody>{positions.map(row => <tr key={row.code}><td><b>{row.code}</b></td><td>{row.name}</td><td><input value={names[row.code] || ""} placeholder="Např. Jana Nováková" onChange={e => setNames(current => ({ ...current, [row.code]: e.target.value }))} /></td></tr>)}</tbody></table></div><div className="sd2-save"><button onClick={save} disabled={saving}>{saving ? "Ukládám…" : "Uložit nastavení"}</button></div></section></div>;
+}
 function BudgetOverview({
   id,
   periodCount,
@@ -957,7 +968,7 @@ function BudgetOverview({
   });
   const qc = useQueryClient();
   const [deleteError, setDeleteError] = useState("");
-  const [sd2Period, setSd2Period] = useState<number | null>(null);
+  const [sd2Period, setSd2Period] = useState<number | null>(null); const [workerSettingsOpen, setWorkerSettingsOpen] = useState(false);
   const [selectedVersion, setSelectedVersion] = useState(activeVersionId ?? "");
   useEffect(() => {
     if (activeVersionId) setSelectedVersion(activeVersionId);
@@ -1027,6 +1038,7 @@ function BudgetOverview({
           </label>
           {me.data?.role === "admin" && (
             <>
+              <button className="secondary budget-settings-button" type="button" title="Nastavení pracovníků v rozpočtových položkách" onClick={() => setWorkerSettingsOpen(true)}>⚙ Nastavení</button>
               <ImportBudget id={id} compact />
               <BudgetChange id={id} compact />
               {selectedVersion && (
@@ -1102,6 +1114,7 @@ function BudgetOverview({
         </table>
       </div>
       {sd2Period && <Sd2MonthlyDialogNew id={id} period={sd2Period} onClose={() => setSd2Period(null)} />}
+      {workerSettingsOpen && <BudgetWorkerSettings id={id} versionId={selectedVersion} onClose={() => setWorkerSettingsOpen(false)} />}
     </section>
   );
 }

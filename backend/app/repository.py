@@ -28,6 +28,7 @@ SHEETS = {
     "SPOLUFINANCOVANI": ["cofinancing_entry_id", "project_id", "entry_date", "amount", "note", "created_at", "created_by"],
     "SD2_MESICE": ["sd2_entry_id", "project_id", "monitoring_period", "month", "budget_item_code", "gross_wage", "employer_contributions", "other_with_contributions", "other_without_contributions", "payment_date", "created_at", "created_by"],
     "SD2_PRILOHY": ["attachment_id", "project_id", "monitoring_period", "file_name", "drive_file_id", "uploaded_at", "uploaded_by"],
+    "PRACOVNICI_ROZPOCTU": ["worker_assignment_id", "project_id", "budget_item_code", "employee_names", "updated_at", "updated_by"],
     "NAVRHY_ZMEN": ["proposal_id", "project_id", "source_budget_version_id", "proposal_status", "calculation_mode", "reserve_rate", "total_deficit", "total_transfer", "created_at", "created_by", "note"],
     "NAVRHY_ZMEN_RADKY": ["proposal_line_id", "proposal_id", "source_item_code", "target_item_code", "amount", "reason", "source_available_before", "source_available_after", "target_balance_before", "target_balance_after"],
     "IMPORT_LOG": ["import_id", "project_id", "import_type", "source_file_name", "source_sha256", "status", "error_code", "message", "created_at", "created_by"],
@@ -50,6 +51,7 @@ class InMemoryRepository(Repository):
         self.cofinancing_entries: dict[str, list[CofinancingEntry]] = defaultdict(list)
         self.sd2_entries: dict[str, list[Sd2MonthlyEntry]] = defaultdict(list)
         self.sd2_attachments: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        self.worker_assignments: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self.project_access: dict[str, set[str]] = defaultdict(set)
         self.import_log: list[dict[str, Any]] = []
 
@@ -148,7 +150,7 @@ class GoogleSheetsRepository(Repository):
 
     def hydrate(self, target: InMemoryRepository) -> None:
         """Načte dávkově trvalý stav do rychlého aplikačního modelu."""
-        target.project_data.clear(); target.budgets.clear(); target.payments.clear(); target.lump_entries.clear(); target.cofinancing_entries.clear(); target.sd2_entries.clear(); target.sd2_attachments.clear(); target.project_access.clear()
+        target.project_data.clear(); target.budgets.clear(); target.payments.clear(); target.lump_entries.clear(); target.cofinancing_entries.clear(); target.sd2_entries.clear(); target.sd2_attachments.clear(); target.worker_assignments.clear(); target.project_access.clear()
         for record in self._records("PROJEKT_UZIVATELE"):
             if self._bool(record.get("active", True)) and record.get("project_id") and record.get("email"):
                 target.project_access[str(record["project_id"])].add(str(record["email"]).lower())
@@ -200,4 +202,11 @@ class GoogleSheetsRepository(Repository):
         for record in self._records("SD2_PRILOHY"):
             if record.get("project_id"):
                 target.sd2_attachments[str(record["project_id"])].append(record)
+        try:
+            worker_records = self._records("PRACOVNICI_ROZPOCTU")
+        except KeyError:  # Compatibility with pre-worker import fixtures and legacy sheets.
+            worker_records = []
+        for record in worker_records:
+            if record.get("project_id") and record.get("budget_item_code"):
+                target.worker_assignments[str(record["project_id"])].append(record)
         target.import_log = self._records("IMPORT_LOG")
