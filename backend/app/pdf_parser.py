@@ -87,6 +87,10 @@ def parse_payment_request(source: str | Path | bytes, file_name: str | None = No
     approved_total = amount_after(summary, "Schválené způsobilé výdaje")
     if sequence == 1:
         approved_total = Decimal("0")
+    elif not summary:
+        raise ValueError("V PDF nebyla nalezena Souhrnná soupiska.")
+    elif approved_total <= 0 or approved_direct + approved_lump <= 0:
+        raise ValueError("Ze Souhrnné soupisky se nepodařilo načíst schválené výdaje.")
     own = amount_after(text, "Vlastní podíl příjemce")
     public = amount_after(text, "Částka zálohy")
     request = PaymentRequest(project_code=after(text, "Číslo projektu"), project_name=after(text, "Název projektu"),

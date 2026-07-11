@@ -28,6 +28,15 @@ def test_final_settlement():
     assert result["settlement"] == Decimal("4698.89")
 
 
+def test_final_settlement_refund_after_final_payment_request():
+    result = final_settlement(
+        Decimal("5583706.14"), Decimal("1403426.54"), Decimal("0"),
+        Decimal("0"), Decimal("1"), Decimal("7476098.00"), Decimal("0"),
+    )
+    assert result["eligible_total"] == Decimal("6987132.68")
+    assert result["settlement"] == Decimal("-488965.32")
+
+
 def test_newer_cumulative_lump_sum_replaces_previous_state():
     from datetime import date
     from app.models import LumpSumEntry

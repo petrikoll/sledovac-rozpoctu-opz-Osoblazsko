@@ -417,6 +417,7 @@ function PaymentRequests({ id }: { id: string }) {
       await Promise.all([
         qc.invalidateQueries({ queryKey: ["payments", id] }),
         qc.invalidateQueries({ queryKey: ["dashboard", id] }),
+        qc.invalidateQueries({ queryKey: ["final-settlement", id] }),
       ]);
     } catch (e) {
       setError(
@@ -1135,6 +1136,14 @@ function FinalSettlement({ id }: { id: string }) {
           Výpočet je orientační do konečného schválení poskytovatelem dotace.
         </p>
       </div>
+      <dl>
+        <dt>Schválené způsobilé výdaje</dt>
+        <dd>{czk.format(Number(data.eligible_total))}</dd>
+        <dt>Nárok na prostředky poskytovatele</dt>
+        <dd>{czk.format(Number(data.provider_entitlement))}</dd>
+        <dt>Dosud přijaté platby</dt>
+        <dd>{czk.format(Number(data.net_received))}</dd>
+      </dl>
     </section>
   );
 }
