@@ -16,7 +16,7 @@ from google.auth.transport import requests
 from google.oauth2 import id_token
 
 from .calculations import final_settlement, lump_sum_metrics, propose_transfers
-from .models import CofinancingEntry, LumpSumEntry, Project, ProjectCreate, Sd2MonthlyEntry, TransferCandidate
+from .models import CofinancingEntry, LumpSumEntry, Project, ProjectCreate, Sd2AttachmentRecord, Sd2MonthlyEntry, TransferCandidate
 from .pdf_parser import extract_budget_code, parse_payment_request
 from .repository import GoogleSheetsRepository, InMemoryRepository
 from .storage import GoogleDriveStorage, LocalFileStorage
@@ -382,6 +382,28 @@ async def upload_sd2_attachment(project_id: str, period: int, file: UploadFile =
         "uploaded_at": datetime.utcnow().isoformat(), "uploaded_by": user["email"]}
     repo.sd2_attachments[project_id].append(attachment)
     if google_repo: google_repo.append_records("SD2_PRILOHY", [attachment])
+    return attachment
+
+
+@app.post("/api/projects/{project_id}/sd2-attachments/record", status_code=201)
+def record_sd2_attachment(project_id: str, period: int, value: Sd2AttachmentRecord, user=Depends(require_editor)):
+    """Record an archive that the browser stored in the signed-in user's Google Drive.
+
+    The archive itself never reaches this server or the service account.
+    """
+    p = project(project_id)
+    if p.project_code != SD2_PROJECT_CODE:
+        raise HTTPException(404, "Přílohy SD2 nejsou pro tento projekt zapnuté.")
+    if not value.file_name.lower().endswith((".zip", ".rar")):
+        raise HTTPException(415, "Povolen je pouze archiv ZIP nebo RAR.")
+    if not value.drive_file_id.strip():
+        raise HTTPException(422, "Chybí identifikátor souboru na Google Drive.")
+    attachment = {"attachment_id": str(uuid4()), "project_id": project_id, "monitoring_period": period,
+        "file_name": value.file_name, "drive_file_id": value.drive_file_id.strip(),
+        "uploaded_at": datetime.utcnow().isoformat(), "uploaded_by": user["email"]}
+    repo.sd2_attachments[project_id].append(attachment)
+    if google_repo:
+        google_repo.append_records("SD2_PRILOHY", [attachment])
     return attachment
 
 

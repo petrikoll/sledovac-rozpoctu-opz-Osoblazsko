@@ -75,6 +75,64 @@ type Sd2Entry = { sd2_entry_id?: string; monitoring_period: number; month: strin
 const CLIENT_ID =
   import.meta.env.VITE_GOOGLE_CLIENT_ID ||
   "812727560459-codfb0fu10agboif0lsjce3k6on4rj3d.apps.googleusercontent.com";
+const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
+const SD2_DRIVE_FOLDER = "Dokumenty aplikace OPZ+";
+
+async function googleDriveError(response: Response) {
+  const payload = await response.json().catch(() => null);
+  return payload?.error?.message || "Google Drive operaci odmítl.";
+}
+
+function requestDriveAccessToken() {
+  return new Promise<string>((resolve, reject) => {
+    if (!window.google?.accounts?.oauth2) {
+      reject(new Error("Google přihlášení se ještě nenačetlo. Obnovte stránku a zkuste to znovu."));
+      return;
+    }
+    const client = window.google.accounts.oauth2.initTokenClient({
+      client_id: CLIENT_ID,
+      scope: DRIVE_SCOPE,
+      callback: (response: { access_token?: string; error?: string; error_description?: string }) => {
+        if (response.access_token) resolve(response.access_token);
+        else reject(new Error(response.error_description || response.error || "Nepodařilo se získat oprávnění k Disku."));
+      },
+    });
+    client.requestAccessToken({ prompt: "consent", hint: tokenEmail(localStorage.getItem("opz_google_token") || "") });
+  });
+}
+
+async function ensureSd2DriveFolder(accessToken: string) {
+  const query = encodeURIComponent(`mimeType = 'application/vnd.google-apps.folder' and name = '${SD2_DRIVE_FOLDER}' and trashed = false`);
+  const list = await fetch(`https://www.googleapis.com/drive/v3/files?q=${query}&spaces=drive&fields=files(id,name)&pageSize=10`, { headers: { Authorization: `Bearer ${accessToken}` } });
+  if (!list.ok) throw new Error(await googleDriveError(list));
+  const folders = await list.json() as { files?: { id: string }[] };
+  if (folders.files?.[0]?.id) return folders.files[0].id;
+  const created = await fetch("https://www.googleapis.com/drive/v3/files?fields=id", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ name: SD2_DRIVE_FOLDER, mimeType: "application/vnd.google-apps.folder" }),
+  });
+  if (!created.ok) throw new Error(await googleDriveError(created));
+  return (await created.json() as { id: string }).id;
+}
+
+async function uploadSd2ArchiveToUserDrive(file: File, projectId: string, period: number) {
+  const accessToken = await requestDriveAccessToken();
+  const folderId = await ensureSd2DriveFolder(accessToken);
+  const metadata = new Blob([JSON.stringify({
+    name: `SD2_${projectId}_${period}_${file.name}`,
+    parents: [folderId],
+    mimeType: file.type || "application/octet-stream",
+  })], { type: "application/json" });
+  const form = new FormData();
+  form.append("metadata", metadata);
+  form.append("file", file);
+  const response = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id", {
+    method: "POST", headers: { Authorization: `Bearer ${accessToken}` }, body: form,
+  });
+  if (!response.ok) throw new Error(await googleDriveError(response));
+  return (await response.json() as { id: string }).id;
+}
 function tokenEmail(token: string) {
   try {
     return (
@@ -850,7 +908,19 @@ function Sd2MonthlyDialogNew({ id, period, onClose }: { id: string; period: numb
   const read = (code: string, month: string, field: keyof Sd2Entry) => changes[`${code}|${month}|${field}`] ?? data.find(x => x.budget_item_code === code && x.month === month)?.[field] ?? (field === "payment_date" ? "" : 0);
   const set = (code: string, month: string, field: keyof Sd2Entry, value: string) => setChanges(current => ({ ...current, [`${code}|${month}|${field}`]: value }));
   async function save() { setSaving(true); setError(""); try { const entries: Sd2Entry[] = SD2_CODES.flatMap(code => months.map(month => { const old = data.find(x => x.budget_item_code === code && x.month === month); return { sd2_entry_id: old?.sd2_entry_id, monitoring_period: period, month, budget_item_code: code, gross_wage: Number(read(code, month, "gross_wage") || 0), employer_contributions: code === "1.1.3.1" ? 0 : Number(read(code, month, "employer_contributions") || 0), other_with_contributions: Number(read(code, month, "other_with_contributions") || 0), other_without_contributions: Number(read(code, month, "other_without_contributions") || 0), payment_date: String(read(code, month, "payment_date") || "") || null }; })); await api(`/projects/${id}/sd2-monthly`, { method: "PUT", body: JSON.stringify({ entries }) }); await qc.invalidateQueries({ queryKey: ["budget-status", id] }); onClose(); } catch (e) { setError(e instanceof Error ? e.message : "Podklad SD2 se nepodařilo uložit."); } finally { setSaving(false); } }
-  async function upload(file: File) { const fd = new FormData(); fd.append("file", file); try { await api(`/projects/${id}/sd2-attachments?period=${period}`, { method: "POST", body: fd }); await qc.invalidateQueries({ queryKey: ["sd2-attachments", id, period] }); } catch (e) { setError(e instanceof Error ? e.message : "Archiv se nepodařilo uložit."); } }
+  async function upload(file: File) {
+    setError("");
+    try {
+      const driveFileId = await uploadSd2ArchiveToUserDrive(file, id, period);
+      await api(`/projects/${id}/sd2-attachments/record?period=${period}`, {
+        method: "POST",
+        body: JSON.stringify({ file_name: file.name, drive_file_id: driveFileId }),
+      });
+      await qc.invalidateQueries({ queryKey: ["sd2-attachments", id, period] });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Archiv se nepodařilo uložit.");
+    }
+  }
   return <div className="sd2-overlay" role="dialog" aria-modal="true"><section className="sd2-dialog"><div className="sd2-dialog-head"><div><h2>Podklad SD2 — {period}. období</h2><p>Měsíční údaje se zobrazí v příslušném období jako podklad před ŽoP.</p></div><div className="sd2-attachments"><label className="upload-button">Uložit výplatní lístky a výpisy z BÚ<input type="file" accept=".zip,.rar" onChange={e => e.target.files?.[0] && upload(e.target.files[0])} /></label>{attachments.map(x => <small key={x.attachment_id}>{x.file_name}</small>)}</div><button className="secondary" onClick={onClose}>Zavřít</button></div>{error && <div className="alert">{error}</div>}<div className="sd2-grid-wrap"><table className="sd2-grid"><thead><tr><th>Položka</th>{months.map(month => <th key={month}>{new Date(`${month}T00:00:00Z`).toLocaleDateString("cs-CZ", { month: "long", year: "numeric" })}</th>)}</tr></thead><tbody>{SD2_CODES.map(code => <tr key={code}><th><b>{code}</b><small>{SD2_ITEM_NAMES[code]}</small></th>{months.map(month => { const noContributions = code === "1.1.3.1"; return <td key={month}><label>Hrubá mzda / odměna<input type="number" step="0.01" value={read(code, month, "gross_wage")} onChange={e => set(code, month, "gross_wage", e.target.value)} /></label>{!noContributions && <label>Odvody zaměstnavatele<input type="number" step="0.01" value={read(code, month, "employer_contributions")} onChange={e => set(code, month, "employer_contributions", e.target.value)} /></label>}<label>Jiné výdaje s odvody<input type="number" step="0.01" value={read(code, month, "other_with_contributions")} onChange={e => set(code, month, "other_with_contributions", e.target.value)} /></label><label>Jiné výdaje bez odvodů<input type="number" step="0.01" value={read(code, month, "other_without_contributions")} onChange={e => set(code, month, "other_without_contributions", e.target.value)} /></label><label>Datum úhrady<input type="date" value={read(code, month, "payment_date")} onChange={e => set(code, month, "payment_date", e.target.value)} /></label></td>; })}</tr>)}</tbody></table></div><div className="sd2-save"><button onClick={save} disabled={saving}>{saving ? "Ukládám…" : "Uložit podklad SD2"}</button></div></section></div>;
 }
 function BudgetOverview({

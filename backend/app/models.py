@@ -31,6 +31,13 @@ class Project(ProjectCreate):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class Sd2AttachmentRecord(BaseModel):
+    """Metadata for an SD2 archive uploaded directly to the signed-in user's Drive."""
+
+    file_name: str
+    drive_file_id: str
+
+
 class BudgetItem(BaseModel):
     code: str
     name: str
