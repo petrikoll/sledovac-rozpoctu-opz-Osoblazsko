@@ -6,7 +6,7 @@ import zipfile
 import openpyxl
 
 from app.pdf_parser import parse_payment_request
-from app.xlsx_parser import export_with_formulas, fallback_rows, parse_budget
+from app.xlsx_parser import export_with_formulas, fallback_rows, parse_budget, validate_budget_structure
 
 SAMPLES = Path(__file__).parents[1] / "samples"
 
@@ -21,6 +21,17 @@ def test_real_budget():
     assert values["1.2"].total_amount == Decimal("1261440")
     assert values["1.1.1.1"].total_amount == Decimal("2232000")
     assert values["1.1.1.2"].total_amount == Decimal("921600")
+    assert validate_budget_structure(result) == []
+
+
+def test_budget_structure_rejects_inconsistent_parent_totals():
+    result = parse_budget(SAMPLES / "Export_2026-07-11_084920.xlsx")
+    item = next(value for value in result.items if value.code == "1.1.1")
+    item.total_amount += Decimal("1")
+
+    errors = validate_budget_structure(result)
+
+    assert any("1.1.1" in error and "rozdíl" in error for error in errors)
 
 
 def test_fallback_and_formula_export():

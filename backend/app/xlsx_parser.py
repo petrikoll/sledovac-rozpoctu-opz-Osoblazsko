@@ -147,6 +147,36 @@ def parse_budget(source: str | Path | bytes, file_name: str | None = None) -> Bu
         summary_count=sum(not x.is_leaf for x in items), warnings=warnings)
 
 
+def validate_budget_structure(analysis: BudgetAnalysis) -> list[str]:
+    """Check arithmetic that can be broken by manually editing an exported XLSX."""
+    errors: list[str] = []
+    codes: dict[str, list[BudgetItem]] = {}
+    for item in analysis.items:
+        codes.setdefault(item.code, []).append(item)
+        if item.total_amount < 0:
+            errors.append(f"Položka {item.code} nesmí mít zápornou částku.")
+
+    for code, occurrences in codes.items():
+        if len(occurrences) > 1:
+            rows = ", ".join(str(item.source_row_number) for item in occurrences)
+            errors.append(f"Kód {code} je v rozpočtu uveden vícekrát (řádky {rows}).")
+
+    for item in analysis.items:
+        children = [child for child in analysis.items if child.parent_code == item.code]
+        is_direct_cost_tree = item.code in {"1", "1.1"} or item.code.startswith("1.1.")
+        if not children or not is_direct_cost_tree or item.category in {"lump_sum", "informational"}:
+            continue
+        children_total = sum((child.total_amount for child in children), Decimal("0"))
+        if children_total != item.total_amount:
+            difference = children_total - item.total_amount
+            errors.append(
+                f"Součet podřízených položek kódu {item.code} je {children_total:.2f} Kč, "
+                f"ale nadřazená položka uvádí {item.total_amount:.2f} Kč "
+                f"(rozdíl {difference:+.2f} Kč)."
+            )
+    return errors
+
+
 def export_with_formulas(analysis: BudgetAnalysis) -> bytes:
     wb = openpyxl.Workbook()
     ws = wb.active

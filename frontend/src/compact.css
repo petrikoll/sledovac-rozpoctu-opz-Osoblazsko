@@ -4,6 +4,7 @@ header { height: 60px; }
 .title { margin-bottom: 16px; }
 .title h1 { font-size: 30px; margin-top: 3px; }
 .title p { margin: 4px 0; }
+.project-create { display: flex; justify-content: flex-end; margin-bottom: 12px; }
 .metrics { grid-template-columns: repeat(4, 1fr); gap: 9px; margin-bottom: 12px; }
 .metrics article { padding: 14px 16px; border-radius: 9px; }
 .metrics article { position: relative; }
@@ -11,8 +12,13 @@ header { height: 60px; }
 .info-tip::after { content: attr(data-tooltip); position: absolute; z-index: 20; top: 23px; right: -5px; width: 260px; padding: 10px 12px; border-radius: 7px; background: #183d2f; color: #fff; box-shadow: 0 6px 20px #0003; font: 500 12px/1.4 system-ui; letter-spacing: 0; text-align: left; opacity: 0; visibility: hidden; transform: translateY(-3px); transition: .15s ease; pointer-events: none; }
 .info-tip:hover::after,.info-tip:focus::after { opacity: 1; visibility: visible; transform: translateY(0); }
 .info-tip:focus { outline: 2px solid #e3a22c; outline-offset: 2px; }
+.budget-change-tip .info-tip { position: relative; top: auto; right: auto; display: inline-grid; margin-left: 5px; vertical-align: middle; }
+.budget-change-tip .info-tip::after { right: auto; left: -8px; width: 220px; }
 .metrics article strong { font-size: 19px; margin-top: 5px; }
 .metrics article small { font-size: 10px; }
+.metric-detail { display: flex; justify-content: space-between; gap: 8px; margin-top: 8px; padding-top: 6px; border-top: 1px solid #d9e1dc; color: #52655c; font-size: 10px; line-height: 1.25; }
+.metric-detail span { max-width: 72%; }
+.metric-detail b { flex: 0 0 auto; color: #263b31; font-size: 11px; white-space: nowrap; }
 .cofinancing div { display: flex; justify-content: space-between; gap: 12px; margin-top: 5px; font-size: 12px; }
 .cofinancing .cofinancing-total { margin-top: 6px; padding-top: 5px; border-top: 1px solid #d9e1dc; font-size: 13px; }
 .panel { margin-top: 12px; padding: 17px 19px; border-radius: 9px; }
@@ -34,6 +40,9 @@ input, select { padding: 8px 9px; }
 .budget-tools { display: flex; align-items: flex-start; justify-content: flex-end; gap: 7px; flex-wrap: wrap; max-width: 390px; }
 .budget-tool { display: contents; }
 .budget-tools .change-actions { display: flex; gap: 7px; }
+.action-with-tip { display: inline-flex; align-items: center; gap: 4px; }
+.action-with-tip .info-tip { position: relative; top: auto; right: auto; flex: 0 0 auto; }
+.action-with-tip .info-tip::after { right: 0; width: 230px; }
 .upload-button { display: inline-flex; align-items: center; margin: 0; border: 1px solid #c8d3cd; border-radius: 7px; background: #f8faf8; color: #334a40; padding: 8px 10px; font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap; }
 .upload-button input { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
 .budget-tools button { padding: 8px 10px; font-size: 12px; }
@@ -46,6 +55,7 @@ input, select { padding: 8px 9px; }
 main { display: flex; flex-direction: column; }
 main > a:first-child { order: 1; }
 main > .title { order: 2; }
+main > .project-create { order: 2; }
 main > .metrics { order: 3; }
 main > .settlement, main > .settlement-strip { order: 4; }
 main > .budget-overview { order: 5; }

@@ -19,7 +19,7 @@ from .calculations import final_settlement, lump_sum_metrics, propose_transfers
 from .models import CofinancingEntry, LumpSumEntry, Project, ProjectCreate, TransferCandidate
 from .pdf_parser import parse_payment_request
 from .repository import GoogleSheetsRepository, InMemoryRepository
-from .xlsx_parser import export_with_formulas, parse_budget
+from .xlsx_parser import export_with_formulas, parse_budget, validate_budget_structure
 
 app = FastAPI(title="Sledovač čerpání rozpočtu OPZ+", version="1.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173").split(","), allow_methods=["*"], allow_headers=["*"])
@@ -287,12 +287,14 @@ def dashboard(project_id: str, user=Depends(current_user)):
     direct_cofinancing = (direct * own_rate).quantize(Decimal("0.01"))
     indirect_cofinancing = (ls * own_rate).quantize(Decimal("0.01"))
     cofinancing_total = (spent * own_rate).quantize(Decimal("0.01"))
+    lump_sum_without_cofinancing = (ls_budget * p.public_funding_rate).quantize(Decimal("0.01"))
     # Haléřový rozdíl po dílčím zaokrouhlení připadne k nepřímým nákladům.
     indirect_cofinancing += cofinancing_total - direct_cofinancing - indirect_cofinancing
     return {"total_budget": p.total_budget, "approved_spending": spent, "remaining": p.total_budget-spent,
         "percentage": spent/p.total_budget*100 if p.total_budget else 0, "direct_approved": direct, "lump_sum_approved": ls,
         "own_funding_rate": own_rate, "direct_cofinancing": direct_cofinancing,
         "indirect_cofinancing": indirect_cofinancing, "cofinancing_total": cofinancing_total,
+        "lump_sum_without_cofinancing": lump_sum_without_cofinancing,
         **lump_sum_metrics(ls_budget, direct, p.lump_sum_rate, repo.lump_entries[project_id])}
 
 
@@ -320,7 +322,20 @@ def budget_status(project_id: str, version_id: str | None = None, user=Depends(c
         if item.parent_code in spent:
             spent[item.parent_code] += spent[item.code]
             for period, amount in periods[item.code].items(): periods[item.parent_code][period] = periods[item.parent_code].get(period, Decimal("0")) + amount
-    return [{**item.model_dump(), "budget_version_id": version["version_id"], "cumulative_spent": spent[item.code],
+    def change_info(item):
+        if not item.is_leaf:
+            return {"has_budget_change": False, "change_note": ""}
+        if item.is_new:
+            return {"has_budget_change": True, "change_note": "Nová položka v této verzi rozpočtu."}
+        if item.previous_amount is not None and item.previous_amount != item.total_amount:
+            previous = f"{item.previous_amount:,.2f}".replace(",", " ").replace(".", ",")
+            difference = item.total_amount - item.previous_amount
+            difference_text = f"{difference:+,.2f}".replace(",", " ").replace(".", ",")
+            return {"has_budget_change": True, "change_note": f"Původně {previous} Kč, změna {difference_text} Kč."}
+        return {"has_budget_change": False, "change_note": ""}
+
+    return [{**item.model_dump(), **change_info(item),
+        "budget_version_id": version["version_id"], "cumulative_spent": spent[item.code],
         "remaining": item.total_amount-spent[item.code], "spent_percent": spent[item.code]/item.total_amount*100 if item.total_amount else 0,
         "expected_final_remaining": item.total_amount-spent[item.code]-item.planned_future_spending, "periods": periods[item.code]}
         for item in items]
@@ -334,6 +349,9 @@ async def analyze_budget_change(project_id: str, file: UploadFile = File(...), u
     current = next((b["analysis"] for b in repo.budgets[project_id] if b["version_id"] == p.active_budget_version_id), None)
     if not current: raise HTTPException(409, "Projekt nemá aktivní rozpočet.")
     old = {x.code: x for x in current.items}; status = {x["code"]: x for x in budget_status(project_id, user=user)}; changes = []
+    for item in result.items:
+        item.is_new = item.code not in old
+        item.previous_amount = old[item.code].total_amount if item.code in old else None
     for code in sorted(set(old) | {x.code for x in result.items}):
         before = old.get(code); after = next((x for x in result.items if x.code == code), None)
         old_amount = before.total_amount if before else Decimal("0"); new_amount = after.total_amount if after else Decimal("0")
@@ -341,7 +359,7 @@ async def analyze_budget_change(project_id: str, file: UploadFile = File(...), u
         spent_value = Decimal(str(status.get(code, {}).get("cumulative_spent", 0)))
         changes.append({"code": code, "name": (after or before).name, "old_amount": old_amount, "new_amount": new_amount,
             "difference": new_amount-old_amount, "status": kind, "spent": spent_value, "new_remaining": new_amount-spent_value})
-    errors = []
+    errors = validate_budget_structure(result)
     if result.total_amount != current.total_amount: errors.append("Celková částka změnového rozpočtu musí být přesně shodná s aktivní verzí, včetně haléřů.")
     errors += [f"Položku {x['code']} nelze snížit pod dosavadní čerpání." for x in changes if x["new_amount"] < x["spent"]]
     token = str(uuid4()); result.token = token; analyses[token] = {"kind": "budget_change", "project_id": project_id, "data": data, "result": result}
@@ -354,6 +372,9 @@ def import_budget_change(project_id: str, body: dict, user=Depends(require_edito
     if not cached or cached["kind"] != "budget_change": raise HTTPException(410, "Analýza změnového rozpočtu vypršela.")
     p = project(project_id); current = next(b["analysis"] for b in repo.budgets[project_id] if b["version_id"] == p.active_budget_version_id)
     result = cached["result"]
+    structure_errors = validate_budget_structure(result)
+    if structure_errors:
+        raise HTTPException(422, " ".join(structure_errors))
     if result.total_amount != current.total_amount: raise HTTPException(422, "Změnový rozpočet nemá přesně stejnou celkovou částku, včetně haléřů.")
     cached["kind"] = "budget"
     return import_budget(project_id, body, user)

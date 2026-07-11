@@ -46,6 +46,8 @@ class BudgetItem(BaseModel):
     unit_catalog: str | None = None
     category: Literal["direct", "lump_sum", "other", "informational", "ineligible"] = "direct"
     is_leaf: bool = True
+    is_new: bool = False
+    previous_amount: Decimal | None = None
     transfer_locked: bool = False
     minimum_remaining_amount: Decimal = Decimal("0")
     planned_future_spending: Decimal = Decimal("0")
