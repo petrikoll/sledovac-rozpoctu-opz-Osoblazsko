@@ -28,11 +28,7 @@ def propose_transfers(items: list[TransferCandidate], reserve_rate: Decimal = De
     for target, deficit in deficits:
         need = q(deficit * (Decimal("1") + reserve_rate))
         for source in donors:
-            source_parent = source.code.rsplit(".", 1)[0] if "." in source.code else ""
-            target_parent = target.code.rsplit(".", 1)[0] if "." in target.code else ""
-            # Automaticky navrhujeme jen věcně blízký přesun mezi sesterskými
-            # položkami. Přesun mezi odlišnými kapitolami vyžaduje rozhodnutí člověka.
-            if need <= 0 or source.code == target.code or source.locked or source_parent != target_parent:
+            if need <= 0 or source.code == target.code or source.locked:
                 continue
             already = sum(t.amount for t in result if t.source_code == source.code)
             available = q(source.budget-source.spent-source.planned-source.minimum_remaining-already)

@@ -22,7 +22,7 @@ def test_transfers_are_balanced_and_respect_lock():
     assert all(x.source_code != "C" for x in transfers)
 
 
-def test_transfers_do_not_cross_budget_branches():
+def test_transfers_can_use_a_real_surplus_from_another_direct_branch():
     items = [
         TransferCandidate(code="1.1.1.1.3", budget=Decimal("100"), spent=Decimal("140")),
         TransferCandidate(code="1.1.1.1.2", budget=Decimal("100"), spent=Decimal("50")),
@@ -31,9 +31,8 @@ def test_transfers_do_not_cross_budget_branches():
 
     transfers = propose_transfers(items)
 
-    assert len(transfers) == 1
-    assert transfers[0].source_code == "1.1.1.1.2"
-    assert transfers[0].target_code == "1.1.1.1.3"
+    assert sum(transfer.amount for transfer in transfers) == Decimal("40.00")
+    assert all(transfer.target_code == "1.1.1.1.3" for transfer in transfers)
 
 
 def test_final_settlement():

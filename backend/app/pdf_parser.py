@@ -12,7 +12,7 @@ import pdfplumber
 
 from .models import PaymentLine, PaymentRequest
 
-MONEY = r"(-?[0-9][0-9 \u00a0]*,[0-9]{2})"
+MONEY = r"(-?[0-9][0-9 \u00a0]*,\s*[0-9]\s*[0-9])"
 BUDGET_CODE = re.compile(r"\b(1(?:\s*\.\s*\d+){2,})\b")
 
 

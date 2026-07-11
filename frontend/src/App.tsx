@@ -1099,7 +1099,7 @@ function BudgetChange({
             <>
               {!proposal.balanced && (
                 <div className="alert">
-                  Sesterské položky nemají dostatečnou rezervu. Automatický návrh proto nepokrývá celé přečerpání; o přesunu z jiné kapitoly musí rozhodnout uživatel.
+                  Reálně nevyčerpané položky nemají dostatečnou rezervu k pokrytí celého přečerpání.
                 </div>
               )}
               <div className="table-wrap"><table>
