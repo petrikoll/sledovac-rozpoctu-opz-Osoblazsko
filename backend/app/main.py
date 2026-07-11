@@ -426,13 +426,14 @@ def generate_proposal(project_id: str, body: dict, user=Depends(require_editor))
     # nezpůsobilé výdaje nejsou samostatným zdrojem rozpočtového přesunu.
     items = [TransferCandidate(code=x["code"], budget=x["total_amount"], spent=x["cumulative_spent"],
         planned=x["planned_future_spending"], minimum_remaining=x["minimum_remaining_amount"],
-        locked=x["transfer_locked"], donor_priority=x["donor_priority"]) for x in budget_status(project_id, user=user)
+        locked=x["transfer_locked"], donor_priority=x["donor_priority"], unit_count=x.get("unit_count")) for x in budget_status(project_id, user=user)
         if x["is_leaf"] and x["category"] == "direct" and x["code"].startswith("1.1.")]
     transfers = propose_transfers(items, Decimal(str(body.get("reserve_rate", 0))))
     deficits = [{"code": x.code, "amount": x.spent-x.budget} for x in items if x.spent > x.budget]
     total_transfer = sum((x.amount for x in transfers), Decimal("0"))
     total_deficit = sum((x["amount"] for x in deficits), Decimal("0"))
-    balanced = total_transfer == total_deficit
+    transfer_reserve = total_transfer - total_deficit if total_transfer >= total_deficit else Decimal("0")
+    balanced = total_transfer >= total_deficit
     proposal_id = str(uuid4())
     p = project(project_id)
     active = next((b["analysis"] for b in repo.budgets[project_id] if b["version_id"] == p.active_budget_version_id), None)
@@ -459,7 +460,7 @@ def generate_proposal(project_id: str, body: dict, user=Depends(require_editor))
         "analysis": active, "transfers": transfers, "balanced": balanced, "feasible": feasible}
     return {"proposal_id": proposal_id, "deficits": deficits, "transfers": transfers,
             "total_transfer": total_transfer, "balanced": balanced, "feasible": feasible,
-            "feasibility_errors": feasibility_errors}
+            "feasibility_errors": feasibility_errors, "transfer_reserve": transfer_reserve}
 
 
 @app.get("/api/projects/{project_id}/change-proposals/{proposal_id}/download")

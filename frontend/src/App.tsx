@@ -1105,6 +1105,11 @@ function BudgetChange({
               {proposal.feasibility_errors?.map((message: string) => (
                 <div className="alert" key={message}>{message}</div>
               ))}
+              {Number(proposal.transfer_reserve) > 0 && (
+                <p className="info">
+                  Kvůli zachování počtu jednotek a ceny maximálně na dvě desetinná místa návrh převádí o {czk.format(Number(proposal.transfer_reserve))} více než samotné přečerpání.
+                </p>
+              )}
               <div className="table-wrap"><table>
                 <thead>
                   <tr>

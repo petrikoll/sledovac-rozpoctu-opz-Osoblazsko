@@ -136,6 +136,7 @@ class TransferCandidate(BaseModel):
     minimum_remaining: Decimal = Decimal("0")
     locked: bool = False
     donor_priority: int = 100
+    unit_count: Decimal | None = None
 
 
 class Transfer(BaseModel):

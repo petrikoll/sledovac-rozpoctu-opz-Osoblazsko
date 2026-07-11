@@ -35,6 +35,39 @@ def test_transfers_can_use_a_real_surplus_from_another_direct_branch():
     assert all(transfer.target_code == "1.1.1.1.3" for transfer in transfers)
 
 
+def test_multiple_partial_transfers_respect_unit_price_cents():
+    items = [
+        TransferCandidate(code="target-a", budget=Decimal("578016"), spent=Decimal("621493.20"), unit_count=Decimal("36")),
+        TransferCandidate(code="target-b", budget=Decimal("50000"), spent=Decimal("102500"), unit_count=Decimal("100")),
+        TransferCandidate(code="source-a", budget=Decimal("100000"), spent=Decimal("69105"), unit_count=Decimal("8")),
+        TransferCandidate(code="source-b", budget=Decimal("120000"), spent=Decimal("21182.16"), unit_count=Decimal("24")),
+        TransferCandidate(code="source-c", budget=Decimal("85600"), spent=Decimal("70000"), unit_count=Decimal("85.6")),
+        TransferCandidate(code="source-d", budget=Decimal("200880"), spent=Decimal("150000"), unit_count=Decimal("216")),
+    ]
+
+    transfers = propose_transfers(items)
+
+    assert sum(t.amount for t in transfers) == Decimal("95977.20")
+    by_source = {}
+    for transfer in transfers:
+        by_source[transfer.source_code] = by_source.get(transfer.source_code, Decimal("0")) + transfer.amount
+    by_code = {item.code: item for item in items}
+    for code, moved in by_source.items():
+        proposed_price = (by_code[code].budget - moved) / by_code[code].unit_count
+        assert proposed_price == proposed_price.quantize(Decimal("0.01"))
+
+
+def test_target_can_receive_small_reserve_to_fit_unit_price():
+    items = [
+        TransferCandidate(code="target", budget=Decimal("100"), spent=Decimal("110.01"), unit_count=Decimal("3")),
+        TransferCandidate(code="source", budget=Decimal("100"), spent=Decimal("0"), unit_count=Decimal("1")),
+    ]
+
+    transfers = propose_transfers(items)
+
+    assert sum(transfer.amount for transfer in transfers) == Decimal("10.02")
+
+
 def test_final_settlement():
     result = final_settlement(Decimal("949613"), Decimal("379845.2"), Decimal("0"), Decimal("0"), Decimal(".95"), Decimal("1258286.4"), Decimal("0"))
     assert result["provider_entitlement"] == Decimal("1262985.29")
