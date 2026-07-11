@@ -62,7 +62,8 @@ def test_change_proposal_never_uses_informational_total_as_donor(monkeypatch):
     common = {"planned_future_spending": 0, "minimum_remaining_amount": 0,
               "transfer_locked": False, "donor_priority": 100, "is_leaf": True}
     rows = [
-        {**common, "code": "3", "category": "informational", "total_amount": 1000000, "cumulative_spent": 0},
+        # Simuluje i stará data, kde byl informační kód 3 chybně uložen jako direct.
+        {**common, "code": "3", "category": "direct", "total_amount": 1000000, "cumulative_spent": 0},
         {**common, "code": "1.1.1.1.2", "category": "direct", "total_amount": 100000, "cumulative_spent": 10000},
         {**common, "code": "1.1.1.1.3", "category": "direct", "total_amount": 100000, "cumulative_spent": 143477.20},
     ]

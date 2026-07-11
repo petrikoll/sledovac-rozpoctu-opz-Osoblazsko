@@ -22,6 +22,9 @@ def test_real_budget():
     assert values["1.2"].total_amount == Decimal("1261440")
     assert values["1.1.1.1"].total_amount == Decimal("2232000")
     assert values["1.1.1.2"].total_amount == Decimal("921600")
+    assert values["2"].category == "ineligible"
+    assert values["3"].category == "informational"
+    assert values["4"].category == "informational"
     assert validate_budget_structure(result) == []
 
 

@@ -425,7 +425,7 @@ def generate_proposal(project_id: str, body: dict, user=Depends(require_editor))
     items = [TransferCandidate(code=x["code"], budget=x["total_amount"], spent=x["cumulative_spent"],
         planned=x["planned_future_spending"], minimum_remaining=x["minimum_remaining_amount"],
         locked=x["transfer_locked"], donor_priority=x["donor_priority"]) for x in budget_status(project_id, user=user)
-        if x["is_leaf"] and x["category"] == "direct"]
+        if x["is_leaf"] and x["category"] == "direct" and x["code"].startswith("1.1.")]
     transfers = propose_transfers(items, Decimal(str(body.get("reserve_rate", 0))))
     deficits = [{"code": x.code, "amount": x.spent-x.budget} for x in items if x.spent > x.budget]
     total_transfer = sum((x.amount for x in transfers), Decimal("0"))
