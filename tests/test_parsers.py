@@ -80,6 +80,23 @@ def test_transfer_proposal_export_contains_audit_columns():
     assert "+43477.20" in ws.cell(rows["1.1.1.2"], 15).value
 
 
+def test_budget_money_is_normalized_to_cents():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Export"
+    ws.append(["Kód", "Název", "Měrná jednotka (individuální)", "Cena jednotky", "Počet jednotek",
+               "Částka celkem", "Potomek", "Úroveň", "Procento", "Kombinace veřejné podpory",
+               "Měrná jednotka (přednastavena ŘO)", "Měrná jednotka (z číselníku)"])
+    ws.append(["1", "Celkem", None, 0, 0, Decimal("34221.00"), False, 1])
+    ws.append(["1.1", "Položka", None, Decimal("287.33"), Decimal("119.10"), Decimal("34221.003"), False, 2])
+    output = BytesIO(); wb.save(output)
+
+    result = parse_budget(output.getvalue())
+
+    assert {item.code: item.total_amount for item in result.items}["1.1"] == Decimal("34221.00")
+    assert validate_budget_structure(result) == []
+
+
 def test_payment_samples():
     p0 = parse_payment_request(SAMPLES / "ZOP_PRJ0.pdf")
     p1 = parse_payment_request(SAMPLES / "ZOP_PRJ1.pdf")

@@ -133,9 +133,10 @@ def parse_budget(source: str | Path | bytes, file_name: str | None = None) -> Bu
             category = "lump_sum"
         else:
             category = "direct"
+        total_amount = (decimal(row[5]) or Decimal("0")).quantize(Decimal("0.01"))
         items.append(BudgetItem(code=code, name=name_value, parent_code=parent, level=level,
             unit_custom=str(row[2]) if row[2] is not None else None, unit_price=decimal(row[3]),
-            unit_count=decimal(row[4]), total_amount=decimal(row[5]) or Decimal("0"), percentage=pct,
+            unit_count=decimal(row[4]), total_amount=total_amount, percentage=pct,
             support_combination=str(row[9]) if row[9] is not None else None,
             unit_preset=str(row[10]) if row[10] is not None else None,
             unit_catalog=str(row[11]) if row[11] is not None else None, category=category,
@@ -209,7 +210,7 @@ def export_with_formulas(analysis: BudgetAnalysis) -> bytes:
         elif children:
             ws.cell(row, 6, "=" + "+".join(f"F{row_by_code[x.code]}" for x in children))
         elif item.unit_price is not None and item.unit_count is not None:
-            ws.cell(row, 6, f"=D{row}*E{row}")
+            ws.cell(row, 6, f"=ROUND(D{row}*E{row},2)")
     ws.column_dimensions["A"].width = 16
     ws.column_dimensions["B"].width = 55
     for cell in ws["F"][1:]:
