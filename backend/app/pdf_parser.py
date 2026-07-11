@@ -13,6 +13,7 @@ import pdfplumber
 from .models import PaymentLine, PaymentRequest
 
 MONEY = r"(-?[0-9][0-9 \u00a0]*,[0-9]{2})"
+BUDGET_CODE = re.compile(r"\b(1(?:\s*\.\s*\d+){2,})\b")
 
 
 def money(value: str | None) -> Decimal:
@@ -37,28 +38,37 @@ def parse_date(value: str):
         return None
 
 
+def extract_budget_code(text: str) -> str | None:
+    matches = BUDGET_CODE.findall(text or "")
+    if not matches:
+        return None
+    # V tabulkách PDF bývají mezery i uprostřed kódu (např. 1.1.4.1 .1).
+    # Nejdelší nalezený kód je konkrétní rozpočtová položka.
+    return re.sub(r"\s+", "", max(matches, key=lambda value: value.count(".")))
+
+
 def _sd2_lines(path: Path) -> list[PaymentLine]:
     lines: list[PaymentLine] = []
     with pdfplumber.open(path) as pdf:
         for page_no, page in enumerate(pdf.pages, 1):
             text = page.extract_text() or ""
-            if "SD2" not in text and not any(x.source_page_number == page_no - 1 for x in lines):
+            if "SD1" not in text and "SD2" not in text and not any(x.source_page_number == page_no - 1 for x in lines):
                 continue
             for table in page.extract_tables() or []:
                 for row_no, row in enumerate(table or [], 1):
                     cells = [re.sub(r"\s+", " ", c or "").strip() for c in row]
                     joined = " | ".join(cells)
-                    code_match = re.search(r"\b(1(?:\.\d+){2,})\b", joined)
+                    code = extract_budget_code(joined)
                     amounts = re.findall(MONEY, joined)
                     first = next((c for c in cells if c.isdigit()), None)
-                    if not code_match or len(amounts) < 1 or not first:
+                    if not code or len(amounts) < 1 or not first:
                         continue
                     values = [money(v) for v in amounts[-3:]]
                     declared = values[0] if len(values) >= 3 else values[-1]
                     reduction = values[-2] if len(values) >= 2 else Decimal("0")
                     approved = values[-1]
                     lines.append(PaymentLine(source_row_number=int(first), source_page_number=page_no,
-                        budget_item_code=code_match.group(1), budget_item_name_raw=joined,
+                        budget_item_code=code, budget_item_name_raw=joined,
                         declared_amount=declared, reduction_amount=reduction, approved_amount=approved))
     return lines
 

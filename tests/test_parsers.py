@@ -5,11 +5,15 @@ import zipfile
 
 import openpyxl
 
-from app.pdf_parser import parse_payment_request
+from app.pdf_parser import extract_budget_code, parse_payment_request
 from app.models import Transfer
 from app.xlsx_parser import export_transfer_proposal, export_with_formulas, fallback_rows, parse_budget, validate_budget_structure
 
 SAMPLES = Path(__file__).parents[1] / "samples"
+
+
+def test_budget_code_with_internal_pdf_spaces_is_normalized():
+    assert extract_budget_code("1.1.4.1 .1 Nájem prostor") == "1.1.4.1.1"
 
 
 def test_real_budget():

@@ -17,7 +17,7 @@ from google.oauth2 import id_token
 
 from .calculations import final_settlement, lump_sum_metrics, propose_transfers
 from .models import CofinancingEntry, LumpSumEntry, Project, ProjectCreate, TransferCandidate
-from .pdf_parser import parse_payment_request
+from .pdf_parser import extract_budget_code, parse_payment_request
 from .repository import GoogleSheetsRepository, InMemoryRepository
 from .xlsx_parser import export_transfer_proposal, export_with_formulas, parse_budget, validate_budget_structure
 
@@ -346,6 +346,8 @@ def budget_status(project_id: str, version_id: str | None = None, user=Depends(c
         period = str(max(1, payment.sequence_number - 1))
         for line in payment.lines:
             code = line.budget_item_code or ""
+            if code not in by_code:
+                code = extract_budget_code(line.budget_item_name_raw or "") or code
             if code in by_code:
                 spent[code] += line.approved_amount
                 periods[code][period] = periods[code].get(period, Decimal("0")) + line.approved_amount
