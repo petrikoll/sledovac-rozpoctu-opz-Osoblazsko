@@ -6,7 +6,8 @@ import zipfile
 import openpyxl
 
 from app.pdf_parser import parse_payment_request
-from app.xlsx_parser import export_with_formulas, fallback_rows, parse_budget, validate_budget_structure
+from app.models import Transfer
+from app.xlsx_parser import export_transfer_proposal, export_with_formulas, fallback_rows, parse_budget, validate_budget_structure
 
 SAMPLES = Path(__file__).parents[1] / "samples"
 
@@ -42,6 +43,20 @@ def test_fallback_and_formula_export():
     rows = {wb["Export"].cell(r, 1).value: r for r in range(2, wb["Export"].max_row + 1)}
     assert wb["Export"].cell(rows["1.1.1"], 6).value.startswith("=")
     assert wb["Export"].cell(rows["1.2"], 6).value == f"=F{rows['1.1']}*I{rows['1.2']}/100"
+
+
+def test_transfer_proposal_export_contains_audit_columns():
+    result = parse_budget(SAMPLES / "Export_2026-07-11_084920.xlsx")
+    data = export_transfer_proposal(result, [Transfer(
+        source_code="1.1.1.1", target_code="1.1.1.2", amount=Decimal("43477.20"))])
+    wb = openpyxl.load_workbook(BytesIO(data), data_only=False)
+    ws = wb["Export"]
+    rows = {str(ws.cell(r, 1).value): r for r in range(2, ws.max_row + 1)}
+    assert ws.cell(1, 13).value == "Navrhovaná změna"
+    assert "do 1.1.1.2" in ws.cell(rows["1.1.1.1"], 13).value
+    assert "z 1.1.1.1" in ws.cell(rows["1.1.1.2"], 13).value
+    assert "-43477.20" in ws.cell(rows["1.1.1.1"], 14).value
+    assert "+43477.20" in ws.cell(rows["1.1.1.2"], 14).value
 
 
 def test_payment_samples():

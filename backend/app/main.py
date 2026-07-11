@@ -19,7 +19,7 @@ from .calculations import final_settlement, lump_sum_metrics, propose_transfers
 from .models import CofinancingEntry, LumpSumEntry, Project, ProjectCreate, TransferCandidate
 from .pdf_parser import parse_payment_request
 from .repository import GoogleSheetsRepository, InMemoryRepository
-from .xlsx_parser import export_with_formulas, parse_budget, validate_budget_structure
+from .xlsx_parser import export_transfer_proposal, export_with_formulas, parse_budget, validate_budget_structure
 
 app = FastAPI(title="Sledovač čerpání rozpočtu OPZ+", version="1.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173").split(","), allow_methods=["*"], allow_headers=["*"])
@@ -428,8 +428,28 @@ def generate_proposal(project_id: str, body: dict, user=Depends(require_editor))
         if x["is_leaf"] and x["category"] == "direct"]
     transfers = propose_transfers(items, Decimal(str(body.get("reserve_rate", 0))))
     deficits = [{"code": x.code, "amount": x.spent-x.budget} for x in items if x.spent > x.budget]
-    return {"proposal_id": str(uuid4()), "deficits": deficits, "transfers": transfers,
-            "total_transfer": sum((x.amount for x in transfers), Decimal("0")), "balanced": True}
+    total_transfer = sum((x.amount for x in transfers), Decimal("0"))
+    total_deficit = sum((x["amount"] for x in deficits), Decimal("0"))
+    proposal_id = str(uuid4())
+    p = project(project_id)
+    active = next((b["analysis"] for b in repo.budgets[project_id] if b["version_id"] == p.active_budget_version_id), None)
+    analyses[proposal_id] = {"kind": "transfer_proposal", "project_id": project_id,
+        "analysis": active, "transfers": transfers}
+    return {"proposal_id": proposal_id, "deficits": deficits, "transfers": transfers,
+            "total_transfer": total_transfer, "balanced": total_transfer == total_deficit}
+
+
+@app.get("/api/projects/{project_id}/change-proposals/{proposal_id}/download")
+def download_proposal(project_id: str, proposal_id: str, user=Depends(require_editor)):
+    project(project_id, user)
+    cached = analyses.get(proposal_id)
+    if not cached or cached.get("kind") != "transfer_proposal" or cached.get("project_id") != project_id:
+        raise HTTPException(404, "Návrh přesunů nebyl nalezen. Vytvořte jej znovu.")
+    if not cached.get("analysis") or not cached.get("transfers"):
+        raise HTTPException(409, "Návrh neobsahuje žádné proveditelné přesuny.")
+    data = export_transfer_proposal(cached["analysis"], cached["transfers"])
+    return StreamingResponse(BytesIO(data), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="Navrh_zmeny_rozpoctu.xlsx"'})
 
 
 @app.get("/api/projects/{project_id}/final-settlement")

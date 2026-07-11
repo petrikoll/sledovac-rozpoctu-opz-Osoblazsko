@@ -12,7 +12,7 @@ from xml.etree import ElementTree as ET
 import openpyxl
 from openpyxl.styles import Font, PatternFill
 
-from .models import BudgetAnalysis, BudgetItem
+from .models import BudgetAnalysis, BudgetItem, Transfer
 
 NS = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
       "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
@@ -208,6 +208,46 @@ def export_with_formulas(analysis: BudgetAnalysis) -> bytes:
     ws.column_dimensions["B"].width = 55
     for cell in ws["F"][1:]:
         cell.number_format = '#,##0.00 "Kč"'
+    output = BytesIO()
+    wb.save(output)
+    return output.getvalue()
+
+
+def export_transfer_proposal(analysis: BudgetAnalysis, transfers: list[Transfer]) -> bytes:
+    """Doplní k rozpočtu navržené přesuny a nové kontrolní částky."""
+    wb = openpyxl.load_workbook(BytesIO(export_with_formulas(analysis)))
+    ws = wb["Export"]
+    note_col, proposed_col = 13, 14
+    ws.cell(1, note_col, "Navrhovaná změna")
+    ws.cell(1, proposed_col, "Navrhovaná částka")
+    for cell in (ws.cell(1, note_col), ws.cell(1, proposed_col)):
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="1F4E78")
+    row_by_code = {str(ws.cell(row, 1).value): row for row in range(2, ws.max_row + 1)}
+    incoming: dict[str, list[Transfer]] = {}
+    outgoing: dict[str, list[Transfer]] = {}
+    for transfer in transfers:
+        incoming.setdefault(transfer.target_code, []).append(transfer)
+        outgoing.setdefault(transfer.source_code, []).append(transfer)
+    for item in analysis.items:
+        row = row_by_code[item.code]
+        notes = [f"Přijmout {t.amount:.2f} Kč z {t.source_code}" for t in incoming.get(item.code, [])]
+        notes += [f"Přesunout {t.amount:.2f} Kč do {t.target_code}" for t in outgoing.get(item.code, [])]
+        ws.cell(row, note_col, "; ".join(notes))
+        delta = sum((t.amount for t in incoming.get(item.code, [])), Decimal("0")) - sum(
+            (t.amount for t in outgoing.get(item.code, [])), Decimal("0"))
+        children = [x for x in analysis.items if x.parent_code == item.code]
+        if item.category == "lump_sum" and analysis.lump_sum_base_code:
+            ws.cell(row, proposed_col, f"=N{row_by_code[analysis.lump_sum_base_code]}*I{row}/100")
+        elif children:
+            ws.cell(row, proposed_col, "=" + "+".join(f"N{row_by_code[x.code]}" for x in children))
+        elif delta:
+            ws.cell(row, proposed_col, f"=F{row}{delta:+.2f}")
+        else:
+            ws.cell(row, proposed_col, f"=F{row}")
+        ws.cell(row, proposed_col).number_format = '#,##0.00 "Kč"'
+    ws.column_dimensions["M"].width = 55
+    ws.column_dimensions["N"].width = 22
     output = BytesIO()
     wb.save(output)
     return output.getvalue()

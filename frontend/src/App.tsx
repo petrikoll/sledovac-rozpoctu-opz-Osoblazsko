@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
-import { api, czk, pct } from "./api";
+import { api, czk, downloadApi, pct } from "./api";
 type Project = {
   project_id: string;
   project_code: string;
@@ -1096,8 +1096,8 @@ function BudgetChange({
               Deficit nelze pokrýt z dostupných položek.
             </div>
           ) : (
-            <div className="table-wrap">
-              <table>
+            <>
+              <div className="table-wrap"><table>
                 <thead>
                   <tr>
                     <th>Zdroj</th>
@@ -1114,8 +1114,13 @@ function BudgetChange({
                     </tr>
                   ))}
                 </tbody>
-              </table>
-            </div>
+              </table></div>
+              <button className="secondary" type="button" onClick={() =>
+                downloadApi(`/projects/${id}/change-proposals/${proposal.proposal_id}/download`, "Navrh_zmeny_rozpoctu.xlsx")
+                  .catch((e) => setError(e instanceof Error ? e.message : "Soubor se nepodařilo stáhnout."))}>
+                Stáhnout upravený rozpočet XLSX
+              </button>
+            </>
           )}
         </div>
       )}
