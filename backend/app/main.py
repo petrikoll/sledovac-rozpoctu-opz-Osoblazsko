@@ -424,7 +424,7 @@ def create_sd2_xml(project_id: str, period: int, body: dict, user=Depends(curren
     project(project_id, user)
     entries = [Sd2MonthlyEntry.model_validate(value) for value in body.get("entries", [])]
     allowed_codes = {item.code for item in sd2_budget_items(project_id)}
-    if not entries or any(entry.budget_item_code not in allowed_codes for entry in entries):
+    if any(entry.budget_item_code not in allowed_codes for entry in entries):
         raise HTTPException(422, "XML obsahuje neplatnou rozpočtovou položku.")
     if any(entry.monitoring_period != period for entry in entries):
         raise HTTPException(422, "XML lze vytvořit pouze pro jedno monitorovací období.")

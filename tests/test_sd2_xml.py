@@ -49,13 +49,24 @@ def test_build_sd2_xml_matches_official_structure():
     assert values["POCETHODINNAPRJ"] == "84.5"
 
 
-def test_build_sd2_xml_requires_complete_business_data():
-    with pytest.raises(ValueError) as error:
-        build_sd2_xml([complete_entry(subject_id="", payment_date=None)])
-    assert "IČ subjektu" in str(error.value)
-    assert "datum úhrady" in str(error.value)
+def test_build_sd2_xml_allows_missing_optional_payment_data_and_pads_czech_id():
+    content = build_sd2_xml([complete_entry(subject_id="2564546", payment_date=None)])
+    assert b"<ns2:IC>02564546</ns2:IC>" in content
+    assert b"DATUMUHRADY" not in content
+
+
+def test_build_sd2_xml_rejects_invalid_subject_id():
+    with pytest.raises(ValueError, match="IČ subjektu"):
+        build_sd2_xml([complete_entry(subject_id="12A45678")])
 
 
 def test_build_sd2_xml_rejects_more_than_two_amount_decimals():
     with pytest.raises(ValueError, match="nejvýše dvě desetinná místa"):
         build_sd2_xml([complete_entry(gross_wage=Decimal("1.234"))])
+
+
+def test_build_sd2_xml_can_create_empty_import():
+    content = build_sd2_xml([], datetime(2026, 7, 12))
+    root = ET.fromstring(content)
+    assert root.tag == f"{{{NAMESPACE}}}IMPORT"
+    assert root.findall(f"{{{NAMESPACE}}}SoupiskaDoklad") == []

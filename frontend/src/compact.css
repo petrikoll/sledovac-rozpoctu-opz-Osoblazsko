@@ -64,6 +64,7 @@ input, select { padding: 8px 9px; }
 .sd2-grid input { width: 100%; min-width: 0; box-sizing: border-box; margin-top: 2px; padding: 4px 5px; font-size: 11px; }
 .sd2-save { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 .sd2-clear-period { margin-right: auto; }
+.sd2-footer-error { margin: 12px 0 0; }
 .sd2-error { white-space: pre-line; }
 .sd2-details-toggle { margin-top: 12px; }
 .sd2-xml-panel { margin-top: 10px; padding: 12px; border: 1px solid #cfdad4; border-radius: 8px; background: #fff; }

@@ -37,8 +37,6 @@ def _has_content(entry: Sd2MonthlyEntry) -> bool:
 def validate_sd2_entries(entries: list[Sd2MonthlyEntry]) -> list[str]:
     active = [entry for entry in entries if _has_content(entry)]
     errors: list[str] = []
-    if not active:
-        return ["V období není žádný vyplněný záznam SD-2."]
     if len(active) > 500:
         errors.append("Jedno XML může obsahovat nejvýše 500 záznamů.")
     seen: set[str] = set()
@@ -48,15 +46,11 @@ def validate_sd2_entries(entries: list[Sd2MonthlyEntry]) -> list[str]:
         if external_id in seen:
             errors.append(f"{label}: ID z externího systému není jedinečné.")
         seen.add(external_id)
-        if not entry.subject_id.strip().isdigit() or not 8 <= len(entry.subject_id.strip()) <= 10:
-            errors.append(f"{label}: doplňte IČ subjektu v délce 8 až 10 číslic.")
+        if entry.subject_id.strip() and (not entry.subject_id.strip().isdigit() or len(entry.subject_id.strip()) > 10):
+            errors.append(f"{label}: IČ subjektu může obsahovat nejvýše 10 číslic.")
         if not entry.budget_item_code.strip():
             errors.append(f"{label}: chybí položka rozpočtu.")
-        if not entry.payment_date:
-            errors.append(f"{label}: chybí datum úhrady.")
-        if not entry.last_name.strip() or not entry.first_name.strip():
-            errors.append(f"{label}: doplňte jméno a příjmení pracovníka.")
-        if entry.employment_type not in ALLOWED_EMPLOYMENT_TYPES:
+        if entry.employment_type is not None and entry.employment_type not in ALLOWED_EMPLOYMENT_TYPES:
             errors.append(f"{label}: vyberte platný pracovněprávní vztah.")
         if entry.work_time_fund < 0 or entry.project_hours < 0:
             errors.append(f"{label}: fond a projektové hodiny nesmějí být záporné.")
@@ -92,15 +86,21 @@ def build_sd2_xml(entries: list[Sd2MonthlyEntry], generated_at: datetime | None 
         record = ET.SubElement(root, f"{{{NAMESPACE}}}SoupiskaDoklad")
         add(record, "ID_EXT", entry.external_id.strip() or f"SD2-{entry.sd2_entry_id}")
         add(record, "TYPDOKLADU", "Mzdy")
-        add(record, "IC", entry.subject_id.strip())
+        if entry.subject_id.strip():
+            subject_id = entry.subject_id.strip().zfill(8) if len(entry.subject_id.strip()) <= 8 else entry.subject_id.strip()
+            add(record, "IC", subject_id)
         add(record, "POLOZKA", entry.budget_item_code.strip())
         if entry.description.strip():
             add(record, "POPIS", entry.description.strip())
-        add(record, "DATUMUHRADY", _datetime(entry.payment_date))
+        if entry.payment_date:
+            add(record, "DATUMUHRADY", _datetime(entry.payment_date))
         add(record, "DATUMLZ", _datetime(entry.month.replace(day=1)))
-        add(record, "PRIJMENI", entry.last_name.strip())
-        add(record, "JMENO", entry.first_name.strip())
-        add(record, "DRUHPRACVZTAHU", str(entry.employment_type))
+        if entry.last_name.strip():
+            add(record, "PRIJMENI", entry.last_name.strip())
+        if entry.first_name.strip():
+            add(record, "JMENO", entry.first_name.strip())
+        if entry.employment_type:
+            add(record, "DRUHPRACVZTAHU", str(entry.employment_type))
         add(record, "MZDA", _decimal(entry.gross_wage, 2))
         add(record, "FONDPRACDOBY", _decimal(entry.work_time_fund, 3))
         add(record, "POCETHODINNAPRJ", _decimal(entry.project_hours, 3))
