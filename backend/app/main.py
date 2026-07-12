@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
+import unicodedata
 from contextvars import ContextVar
 from datetime import datetime
 from decimal import Decimal
@@ -18,6 +20,7 @@ from google.oauth2 import id_token
 from .calculations import final_settlement, lump_sum_metrics, propose_transfers
 from .models import CofinancingEntry, LumpSumEntry, Project, ProjectCreate, Sd2AttachmentRecord, Sd2MonthlyEntry, TransferCandidate
 from .pdf_parser import extract_budget_code, parse_payment_request
+from .payroll_parser import parse_payroll_slips
 from .repository import GoogleSheetsRepository, InMemoryRepository
 from .sd2_xml import build_sd2_xml
 from .storage import GoogleDriveStorage, LocalFileStorage
@@ -340,19 +343,34 @@ SD2_PROJECT_CODE = "CZ.03.02.01/00/25_106/0006125"
 SD2_CODES = {"1.1.1.1", "1.1.1.2", "1.1.1.3", "1.1.2.1", "1.1.3.1"}
 
 
+def sd2_budget_items(project_id: str):
+    p = repo.project_data[project_id]
+    version = next((value for value in repo.budgets[project_id] if value["version_id"] == p.active_budget_version_id), None)
+    if not version:
+        return []
+    return [item for item in version["analysis"].items
+            if item.is_leaf and item.category == "direct" and re.match(r"^1\.1\.[123](?:\.|$)", item.code)]
+
+
+def normalized_name(value: str) -> str:
+    value = unicodedata.normalize("NFKD", value)
+    normalized = "".join(char for char in value if not unicodedata.combining(char)).casefold()
+    parts = [part for part in normalized.split() if part.strip(".,") not in {"bc", "mgr", "ing", "mudr", "judr", "phd", "phdr", "dis"}]
+    return " ".join(parts)
+
+
 @app.get("/api/projects/{project_id}/sd2-monthly")
 def sd2_monthly(project_id: str, period: int, user=Depends(current_user)):
-    p = project(project_id, user)
-    if p.project_code != SD2_PROJECT_CODE: raise HTTPException(404, "Měsíční podklad SD2 není pro tento projekt zapnutý.")
+    project(project_id, user)
     return [entry for entry in repo.sd2_entries[project_id] if entry.monitoring_period == period]
 
 
 @app.put("/api/projects/{project_id}/sd2-monthly")
 def save_sd2_monthly(project_id: str, body: dict, user=Depends(require_editor)):
-    p = project(project_id, user)
-    if p.project_code != SD2_PROJECT_CODE: raise HTTPException(404, "Měsíční podklad SD2 není pro tento projekt zapnutý.")
+    project(project_id, user)
     entries = [Sd2MonthlyEntry.model_validate(value) for value in body.get("entries", [])]
-    if not entries or any(entry.budget_item_code not in SD2_CODES for entry in entries):
+    allowed_codes = {item.code for item in sd2_budget_items(project_id)}
+    if not entries or any(entry.budget_item_code not in allowed_codes for entry in entries):
         raise HTTPException(422, "Neplatná položka podkladu SD2.")
     period = entries[0].monitoring_period
     if any(entry.monitoring_period != period for entry in entries): raise HTTPException(422, "Uložte najednou pouze jedno období.")
@@ -360,7 +378,6 @@ def save_sd2_monthly(project_id: str, body: dict, user=Depends(require_editor)):
     index = {(x.monitoring_period, x.month, x.budget_item_code): i for i, x in enumerate(existing)}
     appended = []
     for entry in entries:
-        if entry.budget_item_code == "1.1.3.1": entry.employer_contributions = Decimal("0")
         key = (entry.monitoring_period, entry.month, entry.budget_item_code)
         if key in index:
             entry.sd2_entry_id = existing[index[key]].sd2_entry_id
@@ -375,9 +392,7 @@ def save_sd2_monthly(project_id: str, body: dict, user=Depends(require_editor)):
 
 @app.get("/api/projects/{project_id}/sd2-xml")
 def download_sd2_xml(project_id: str, period: int, user=Depends(current_user)):
-    p = project(project_id, user)
-    if p.project_code != SD2_PROJECT_CODE:
-        raise HTTPException(404, "Export SD-2 není pro tento projekt zapnutý.")
+    project(project_id, user)
     entries = [entry for entry in repo.sd2_entries[project_id] if entry.monitoring_period == period]
     try:
         content = build_sd2_xml(entries)
@@ -387,17 +402,44 @@ def download_sd2_xml(project_id: str, period: int, user=Depends(current_user)):
     return StreamingResponse(BytesIO(content), media_type="application/xml; charset=utf-8", headers=headers)
 
 
+@app.post("/api/projects/{project_id}/payroll-slips/analyze")
+async def analyze_payroll_slips(project_id: str, period: int, file: UploadFile = File(...), user=Depends(require_editor)):
+    project(project_id, user)
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(415, "Vyberte soubor PDF s výplatními páskami.")
+    data = await file.read(MAX_SIZE + 1)
+    if len(data) > MAX_SIZE:
+        raise HTTPException(413, "Soubor je větší než povolených 20 MB.")
+    try:
+        rows = parse_payroll_slips(data)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    assignments = repo.worker_assignments[project_id]
+    assigned_codes: dict[str, str] = {}
+    for assignment in assignments:
+        for name in str(assignment.get("employee_names", "")).split(","):
+            if name.strip():
+                assigned_codes[normalized_name(name)] = str(assignment.get("budget_item_code", ""))
+                assigned_codes[normalized_name(" ".join(reversed(name.strip().split())))] = str(assignment.get("budget_item_code", ""))
+    items = sd2_budget_items(project_id)
+    allowed = {item.code for item in items}
+    for row in rows:
+        matched = assigned_codes.get(normalized_name(row["full_name"]), "")
+        row["budget_item_code"] = matched if matched in allowed else ""
+        row["match_status"] = "matched" if row["budget_item_code"] else "unmatched"
+    return {"period": period, "file_name": file.filename, "rows": rows,
+            "budget_items": [{"code": item.code, "name": item.name} for item in items]}
+
+
 @app.get("/api/projects/{project_id}/sd2-attachments")
 def sd2_attachments(project_id: str, period: int, user=Depends(current_user)):
-    p = project(project_id, user)
-    if p.project_code != SD2_PROJECT_CODE: raise HTTPException(404, "Přílohy SD2 nejsou pro tento projekt zapnuté.")
+    project(project_id, user)
     return [value for value in repo.sd2_attachments[project_id] if int(value.get("monitoring_period", 0)) == period]
 
 
 @app.post("/api/projects/{project_id}/sd2-attachments", status_code=201)
 async def upload_sd2_attachment(project_id: str, period: int, file: UploadFile = File(...), user=Depends(require_editor)):
-    p = project(project_id)
-    if p.project_code != SD2_PROJECT_CODE: raise HTTPException(404, "Přílohy SD2 nejsou pro tento projekt zapnuté.")
+    project(project_id, user)
     if not file.filename or not file.filename.lower().endswith((".zip", ".rar")):
         raise HTTPException(415, "Povolen je pouze archiv ZIP nebo RAR.")
     data = await file.read(MAX_SIZE + 1)
@@ -421,9 +463,7 @@ def record_sd2_attachment(project_id: str, period: int, value: Sd2AttachmentReco
 
     The archive itself never reaches this server or the service account.
     """
-    p = project(project_id)
-    if p.project_code != SD2_PROJECT_CODE:
-        raise HTTPException(404, "Přílohy SD2 nejsou pro tento projekt zapnuté.")
+    project(project_id, user)
     if not value.file_name.lower().endswith((".zip", ".rar")):
         raise HTTPException(415, "Povolen je pouze archiv ZIP nebo RAR.")
     if not value.drive_file_id.strip():

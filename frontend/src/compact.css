@@ -78,6 +78,17 @@ input, select { padding: 8px 9px; }
 .sd2-xml-table th,.sd2-xml-table td { padding: 5px; border-bottom: 1px solid #dce5df; }
 .sd2-xml-table input,.sd2-xml-table select { width: 100%; min-width: 95px; box-sizing: border-box; padding: 5px; font-size: 11px; }
 .sd2-xml-table td:nth-child(1),.sd2-xml-table td:nth-child(2) { white-space: nowrap; }
+.payroll-preview { margin: 10px 0; padding: 12px; border: 1px solid #d7b86b; border-radius: 8px; background: #fffaf0; }
+.payroll-preview-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.payroll-preview h3 { margin: 0 0 3px; }
+.payroll-preview p { margin: 0 0 8px; color: #5d625f; font-size: 12px; }
+.payroll-preview table { min-width: 1040px; }
+.payroll-preview td small { display: block; margin-top: 3px; color: #607168; }
+.payroll-preview input,.payroll-preview select { min-width: 115px; padding: 6px; font-size: 11px; }
+.payroll-preview select { min-width: 245px; }
+.payroll-preview select.unmatched { border-color: #c7664c; background: #fff1ed; }
+.payroll-preview-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
+.sd2-empty { display: grid; gap: 3px; margin: 10px 0; padding: 18px; border: 1px dashed #aebdb5; border-radius: 8px; color: #52655c; text-align: center; }
 .budget-overview .inactive-period { color: #9ba6a0; text-align: center; font-size: 15px !important; }
 .budget-overview-head { display: flex; align-items: center; gap: 22px; }
 .budget-heading { flex: 0 1 auto; min-width: 280px; }
