@@ -49,6 +49,7 @@ RECIPIENT_ONLY_USERS = {
     "starosta@divcihrad.cz": "osoblažský cech, z.ú.",
 }
 PROJECT_ONLY_USERS = {
+    "srssjesenik@gmail.com": "CZ.03.02.01/00/24_065/0004961",
     "mb_ucetni@seznam.cz": "CZ.03.02.01/00/25_106/0006125",
 }
 

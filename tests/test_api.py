@@ -8,6 +8,24 @@ from app.models import Sd2MonthlyEntry
 client = TestClient(app)
 
 
+def test_srssjesenik_can_only_view_jesenicko_project():
+    jesenicko = client.post("/api/projects", json={
+        "project_code": "CZ.03.02.01/00/24_065/0004961",
+        "project_name": "Jesenicko proti dluhům III",
+        "recipient_name": "P",
+    }).json()
+    other = client.post("/api/projects", json={
+        "project_code": "CZ.OTHER",
+        "project_name": "Jiný projekt",
+        "recipient_name": "P",
+    }).json()
+    from app.main import can_view_project
+    user = {"email": "srssjesenik@gmail.com", "role": "editor"}
+
+    assert can_view_project(jesenicko["project_id"], user) is True
+    assert can_view_project(other["project_id"], user) is False
+
+
 def test_delete_sd2_period_keeps_other_periods():
     project = client.post("/api/projects", json={"project_code": "CZ.MOSTY", "project_name": "Mosty v rodině", "recipient_name": "P"}).json()
     project_id = project["project_id"]
