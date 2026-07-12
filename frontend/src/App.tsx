@@ -1014,12 +1014,12 @@ function BudgetOverview({
   return (
     <section className="panel wide budget-overview">
       <div className="budget-overview-head">
-        <div>
+        <div className="budget-heading">
           <h2>Čerpání rozpočtu po položkách</h2>
           {historical && <p>Historický pohled na verzi {selectedIndex + 1}. Čerpání je promítnuto proti tehdejším částkám.</p>}
         </div>
         <div className="budget-tools">
-          <div className="budget-tools-primary"><label className="version-select">
+          <label className="version-select">
             Verze rozpočtu
             <select value={selectedVersion} onChange={(e) => setSelectedVersion(e.target.value)}>
               {versions.data?.map((version, index) => <option key={version.version_id} value={version.version_id}>{version.version_id === effectiveActive ? `Aktuální verze ${index + 1}` : index === 0 ? "Původní rozpočet" : `Verze ${index + 1}`}</option>)}
@@ -1027,14 +1027,11 @@ function BudgetOverview({
           </label>
           {me.data?.role === "admin" && (
             <>
-              <button className="secondary budget-settings-button" type="button" title="Nastavení pracovníků v rozpočtových položkách" onClick={() => setWorkerSettingsOpen(true)}>⚙ Nastavení</button>
-            </>
-          )}</div>
-          {me.data?.role === "admin" && (
-            <><div className="budget-tools-actions">
               <ImportBudget id={id} compact />
               <BudgetChange id={id} compact />
-            </div>{selectedVersion && <div className="budget-tools-danger"><button className="danger" type="button" onClick={removeSelectedVersion}>Smazat verzi</button></div>}</>
+              <button className="secondary budget-settings-button" type="button" title="Nastavení pracovníků v rozpočtových položkách" onClick={() => setWorkerSettingsOpen(true)}>⚙ Nastavení</button>
+              {selectedVersion && <button className="danger budget-delete-version" type="button" onClick={removeSelectedVersion}>Smazat verzi</button>}
+            </>
           )}
         </div>
       </div>

@@ -64,11 +64,12 @@ input, select { padding: 8px 9px; }
 .sd2-grid input { width: 100%; min-width: 0; box-sizing: border-box; margin-top: 2px; padding: 4px 5px; font-size: 11px; }
 .sd2-save { display: flex; justify-content: flex-end; margin-top: 14px; }
 .budget-overview .inactive-period { color: #9ba6a0; text-align: center; font-size: 15px !important; }
-.budget-overview-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
-.budget-overview-head > div:first-child { min-width: 0; }
-.budget-tools { display: grid; justify-items: end; gap: 7px; min-width: 420px; }
-.budget-tools-primary,.budget-tools-actions,.budget-tools-danger { display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
-.budget-tools-danger { width: 100%; }
+.budget-overview-head { display: flex; align-items: center; gap: 22px; }
+.budget-heading { flex: 0 1 auto; min-width: 280px; }
+.budget-heading h2 { margin: 0; }
+.budget-heading p { margin: 4px 0 0; }
+.budget-tools { display: flex; flex: 1 1 auto; align-items: center; gap: 7px; min-width: 0; }
+.budget-delete-version { margin-left: auto; }
 .budget-tool { display: contents; }
 .budget-tools .change-actions { display: flex; gap: 7px; }
 .action-with-tip { display: inline-flex; align-items: center; gap: 4px; }
@@ -80,7 +81,7 @@ input, select { padding: 8px 9px; }
 .version-select { display: flex; flex-direction: row; align-items: center; gap: 6px; margin: 0; color: #52655c; font-size: 11px; white-space: nowrap; }
 .version-select select { min-width: 150px; padding: 7px 8px; font-size: 12px; }
 .budget-tool-preview { width: 100%; flex-basis: 100%; margin-top: 0; }
-@media (max-width: 820px) { .budget-overview-head { flex-direction: column; } .budget-tools { min-width: 0; justify-items: start; } .budget-tools-primary,.budget-tools-actions,.budget-tools-danger { justify-content: flex-start; flex-wrap: wrap; } }
+@media (max-width: 1100px) { .budget-overview-head { align-items: flex-start; flex-direction: column; gap: 10px; } .budget-tools { width: 100%; flex-wrap: wrap; } .budget-delete-version { margin-left: 0; } }
 
 /* ŽoP navazuje přímo na přehled čerpání; zbytek finanční evidence je až pod ní. */
 main { display: flex; flex-direction: column; }
