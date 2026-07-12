@@ -390,6 +390,23 @@ def save_sd2_monthly(project_id: str, body: dict, user=Depends(require_editor)):
     return [entry for entry in existing if entry.monitoring_period == period]
 
 
+@app.delete("/api/projects/{project_id}/sd2-period", status_code=204)
+def delete_sd2_period(project_id: str, period: int, user=Depends(require_editor)):
+    project(project_id, user)
+    entries = [entry for entry in repo.sd2_entries[project_id] if entry.monitoring_period == period]
+    attachments = [value for value in repo.sd2_attachments[project_id]
+                   if int(value.get("monitoring_period", 0)) == period]
+    if google_repo:
+        for entry in entries:
+            google_repo.delete_record("SD2_MESICE", "sd2_entry_id", entry.sd2_entry_id)
+        for attachment in attachments:
+            google_repo.delete_record("SD2_PRILOHY", "attachment_id", str(attachment.get("attachment_id", "")))
+    repo.sd2_entries[project_id] = [entry for entry in repo.sd2_entries[project_id]
+                                    if entry.monitoring_period != period]
+    repo.sd2_attachments[project_id] = [value for value in repo.sd2_attachments[project_id]
+                                        if int(value.get("monitoring_period", 0)) != period]
+
+
 @app.get("/api/projects/{project_id}/sd2-xml")
 def download_sd2_xml(project_id: str, period: int, user=Depends(current_user)):
     project(project_id, user)

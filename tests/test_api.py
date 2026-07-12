@@ -1,8 +1,29 @@
 from fastapi.testclient import TestClient
+from datetime import date
 from decimal import Decimal
 from app.main import app, repo
+from app.models import Sd2MonthlyEntry
 
 client = TestClient(app)
+
+
+def test_delete_sd2_period_keeps_other_periods():
+    project = client.post("/api/projects", json={"project_code": "CZ.MOSTY", "project_name": "Mosty v rodině", "recipient_name": "P"}).json()
+    project_id = project["project_id"]
+    repo.sd2_entries[project_id] = [
+        Sd2MonthlyEntry(monitoring_period=1, month=date(2023, 11, 1), budget_item_code="1.1.1.1", gross_wage=100),
+        Sd2MonthlyEntry(monitoring_period=2, month=date(2024, 1, 1), budget_item_code="1.1.1.1", gross_wage=200),
+    ]
+    repo.sd2_attachments[project_id] = [
+        {"attachment_id": "a1", "monitoring_period": 1},
+        {"attachment_id": "a2", "monitoring_period": 2},
+    ]
+
+    response = client.delete(f"/api/projects/{project_id}/sd2-period?period=1")
+
+    assert response.status_code == 204
+    assert [entry.monitoring_period for entry in repo.sd2_entries[project_id]] == [2]
+    assert [entry["monitoring_period"] for entry in repo.sd2_attachments[project_id]] == [2]
 
 
 def test_health_and_project_crud():

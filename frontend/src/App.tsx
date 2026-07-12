@@ -902,7 +902,7 @@ function Sd2MonthlyDialog({ id, period, onClose }: { id: string; period: number;
   }
   return <div className="sd2-overlay" role="dialog" aria-modal="true"><section className="sd2-dialog"><div className="sd2-dialog-head"><div><h2>Podklad SD2 — {period}. období</h2><p>Měsíční údaje se zobrazí v příslušném období jako podklad před ŽoP.</p></div><button className="secondary" onClick={onClose}>Zavřít</button></div>{error && <div className="alert">{error}</div>}<div className="sd2-grid-wrap"><table className="sd2-grid"><thead><tr><th>Položka</th>{Array.from({ length: 6 }, (_, i) => <th key={i}>{new Date(`${monthFor(i)}T00:00:00Z`).toLocaleDateString("cs-CZ", { month: "long", year: "numeric" })}</th>)}</tr></thead><tbody>{SD2_CODES.map(code => <tr key={code}><th>{code}</th>{Array.from({ length: 6 }, (_, i) => { const month = monthFor(i); const noContributions = code === "1.1.3.1"; return <td key={month}><label>Hrubá mzda / odměna<input type="number" step="0.01" value={read(code, month, "gross_wage")} onChange={e => set(code, month, "gross_wage", e.target.value)} /></label>{!noContributions && <label>Odvody zaměstnavatele<input type="number" step="0.01" value={read(code, month, "employer_contributions")} onChange={e => set(code, month, "employer_contributions", e.target.value)} /></label>}<label>Jiné výdaje s odvody<input type="number" step="0.01" value={read(code, month, "other_with_contributions")} onChange={e => set(code, month, "other_with_contributions", e.target.value)} /></label><label>Jiné výdaje bez odvodů<input type="number" step="0.01" value={read(code, month, "other_without_contributions")} onChange={e => set(code, month, "other_without_contributions", e.target.value)} /></label><label>Datum úhrady<input type="date" value={read(code, month, "payment_date")} onChange={e => set(code, month, "payment_date", e.target.value)} /></label></td>; })}</tr>)}</tbody></table></div><div className="sd2-save"><button onClick={save} disabled={saving}>{saving ? "Ukládám…" : "Uložit podklad SD2"}</button></div></section></div>;
 }
-function Sd2MonthlyDialogNew({ id, period, projectCode, onClose }: { id: string; period: number; projectCode: string; onClose: () => void }) {
+function Sd2MonthlyDialogNew({ id, period, projectCode, projectName, onClose }: { id: string; period: number; projectCode: string; projectName: string; onClose: () => void }) {
   const qc = useQueryClient();
   const { data = [] } = useQuery({ queryKey: ["sd2-monthly", id, period], queryFn: () => api<Sd2Entry[]>(`/projects/${id}/sd2-monthly?period=${period}`) });
   const { data: attachments = [] } = useQuery({ queryKey: ["sd2-attachments", id, period], queryFn: () => api<any[]>(`/projects/${id}/sd2-attachments?period=${period}`) });
@@ -937,6 +937,17 @@ function Sd2MonthlyDialogNew({ id, period, projectCode, onClose }: { id: string;
   }));
   async function save(close = true) { setSaving(true); setError(""); try { await api(`/projects/${id}/sd2-monthly`, { method: "PUT", body: JSON.stringify({ entries: makeEntries() }) }); await Promise.all([qc.invalidateQueries({ queryKey: ["budget-status", id] }), qc.invalidateQueries({ queryKey: ["sd2-monthly", id, period] })]); if (close) onClose(); return true; } catch (e) { setError(e instanceof Error ? e.message : "Podklad SD2 se nepodařilo uložit."); return false; } finally { setSaving(false); } }
   async function exportXml() { if (await save(false)) { try { await downloadApi(`/projects/${id}/sd2-xml?period=${period}`, `SD-2_obdobi_${period}.xml`); } catch (e) { setError(e instanceof Error ? e.message : "XML SD-2 se nepodařilo vytvořit."); setXmlDetails(true); } } }
+  async function clearPeriod() {
+    if (!window.confirm(`Opravdu chcete smazat všechny údaje SD-2 v ${period}. období? Soubory uložené na vašem Google Disku zůstanou zachované.`)) return;
+    setSaving(true); setError("");
+    try {
+      await api(`/projects/${id}/sd2-period?period=${period}`, { method: "DELETE" });
+      setChanges({}); setExtraMonths([]); setPayrollPreview(null);
+      await Promise.all([qc.invalidateQueries({ queryKey: ["sd2-monthly", id, period] }), qc.invalidateQueries({ queryKey: ["sd2-attachments", id, period] }), qc.invalidateQueries({ queryKey: ["budget-status", id] })]);
+      setUploadNotice(`Všechny údaje ${period}. období byly smazány.`); window.setTimeout(() => setUploadNotice(""), 5000);
+    } catch (e) { setError(e instanceof Error ? e.message : "Údaje období se nepodařilo smazat."); }
+    finally { setSaving(false); }
+  }
   function applySubjectId() { setChanges(current => { const next = { ...current }; for (const code of sd2Codes) for (const month of months) next[`${code}|${month}|subject_id`] = defaultSubjectId; return next; }); }
   async function analyzePayroll(file: File) {
     setAnalyzingPayroll(true); setError(""); setPayrollPreview(null);
@@ -1014,7 +1025,7 @@ function Sd2MonthlyDialogNew({ id, period, projectCode, onClose }: { id: string;
       <div className="sd2-xml-heading"><div><h3>Údaje pro import XML do IS KP21+</h3><p>Vyplňte údaje u řádků, ve kterých vykazujete výdaj. Technické ID vytvoří aplikace automaticky.</p></div><label>Výchozí IČ subjektu<div className="sd2-subject-apply"><input inputMode="numeric" maxLength={10} value={defaultSubjectId} onChange={e => setDefaultSubjectId(e.target.value.replace(/\D/g, ""))} /><button type="button" className="secondary" onClick={applySubjectId}>Použít všude</button></div></label></div>
       <div className="sd2-xml-table-wrap"><table className="sd2-xml-table"><thead><tr><th>Měsíc</th><th>Položka</th><th>IČ</th><th>Jméno</th><th>Příjmení</th><th>Pracovní vztah</th><th>Fond hodin</th><th>Hodiny projektu</th><th>Datum úhrady</th><th>Popis</th></tr></thead><tbody>{sd2Codes.flatMap(code => months.map(month => <tr key={`${code}-${month}`}><td>{new Date(`${month}T00:00:00Z`).toLocaleDateString("cs-CZ", { month: "2-digit", year: "numeric" })}</td><td><b>{code}</b></td><td><input inputMode="numeric" maxLength={10} value={read(code, month, "subject_id")} onChange={e => set(code, month, "subject_id", e.target.value.replace(/\D/g, ""))} /></td><td><input value={read(code, month, "first_name")} onChange={e => set(code, month, "first_name", e.target.value)} /></td><td><input value={read(code, month, "last_name")} onChange={e => set(code, month, "last_name", e.target.value)} /></td><td><select value={read(code, month, "employment_type") || employmentFor(code)} onChange={e => set(code, month, "employment_type", e.target.value)}><option value="Smlouva">Pracovní smlouva</option><option value="DPC">DPČ</option><option value="DPP">DPP od roku 2025</option><option value="DPPDo">DPP do 10 tis. (do 2024)</option><option value="DPPNad">DPP nad 10 tis. (do 2024)</option></select></td><td><input type="number" min="0" step="0.01" value={read(code, month, "work_time_fund")} onChange={e => set(code, month, "work_time_fund", e.target.value)} /></td><td><input type="number" min="0" step="0.01" value={read(code, month, "project_hours")} onChange={e => set(code, month, "project_hours", e.target.value)} /></td><td><input type="date" value={read(code, month, "payment_date")} onChange={e => set(code, month, "payment_date", e.target.value)} /></td><td><input maxLength={2000} value={read(code, month, "description")} onChange={e => set(code, month, "description", e.target.value)} /></td></tr>))}</tbody></table></div>
     </section>}
-    <div className="sd2-save"><button className="secondary" type="button" onClick={() => setXmlDetails(true)}>Kontrola údajů XML</button><button type="button" onClick={exportXml} disabled={saving}>Stáhnout XML SD-2</button><button type="button" onClick={() => save()} disabled={saving}>{saving ? "Ukládám…" : "Uložit podklad SD2"}</button></div>
+    <div className="sd2-save">{projectName.trim().toLocaleLowerCase("cs-CZ") === "mosty v rodině" && <button className="danger sd2-clear-period" type="button" onClick={clearPeriod} disabled={saving}>Smazat vše</button>}<button className="secondary" type="button" onClick={() => setXmlDetails(true)}>Kontrola údajů XML</button><button type="button" onClick={exportXml} disabled={saving}>Stáhnout XML SD-2</button><button type="button" onClick={() => save()} disabled={saving}>{saving ? "Ukládám…" : "Uložit podklad SD2"}</button></div>
   </section></div>;
 }
 function BudgetWorkerSettings({ id, versionId, onClose }: { id: string; versionId?: string; onClose: () => void }) {
@@ -1032,11 +1043,13 @@ function BudgetOverview({
   periodCount,
   activeVersionId,
   projectCode,
+  projectName,
 }: {
   id: string;
   periodCount: number;
   activeVersionId?: string | null;
   projectCode?: string;
+  projectName?: string;
 }) {
   const versions = useQuery({
     queryKey: ["budget-versions", id],
@@ -1178,7 +1191,7 @@ function BudgetOverview({
           </tbody>
         </table>
       </div>
-      {sd2Period && <Sd2MonthlyDialogNew id={id} period={sd2Period} projectCode={projectCode || ""} onClose={() => setSd2Period(null)} />}
+      {sd2Period && <Sd2MonthlyDialogNew id={id} period={sd2Period} projectCode={projectCode || ""} projectName={projectName || ""} onClose={() => setSd2Period(null)} />}
       {workerSettingsOpen && <BudgetWorkerSettings id={id} versionId={selectedVersion} onClose={() => setWorkerSettingsOpen(false)} />}
     </section>
   );
@@ -1485,7 +1498,7 @@ function Dashboard() {
         </section>
       )}
       <FinalSettlement id={id} />
-      <BudgetOverview id={id} periodCount={p.data.total_monitoring_periods} projectCode={p.data.project_code} />
+      <BudgetOverview id={id} periodCount={p.data.total_monitoring_periods} projectCode={p.data.project_code} projectName={p.data.project_name} />
       <LumpSumSpending id={id} />
       <PaymentRequests id={id} />
     </main>
