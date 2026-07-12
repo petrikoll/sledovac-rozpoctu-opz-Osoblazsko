@@ -62,7 +62,22 @@ input, select { padding: 8px 9px; }
 .sd2-grid td { min-width: 0; }
 .sd2-grid label { display: block; margin: 0 0 4px; color: #3b5147; font-size: 9px; font-weight: 700; line-height: 1.1; }
 .sd2-grid input { width: 100%; min-width: 0; box-sizing: border-box; margin-top: 2px; padding: 4px 5px; font-size: 11px; }
-.sd2-save { display: flex; justify-content: flex-end; margin-top: 14px; }
+.sd2-save { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.sd2-error { white-space: pre-line; }
+.sd2-details-toggle { margin-top: 12px; }
+.sd2-xml-panel { margin-top: 10px; padding: 12px; border: 1px solid #cfdad4; border-radius: 8px; background: #fff; }
+.sd2-xml-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 10px; }
+.sd2-xml-heading h3 { margin: 0 0 3px; }
+.sd2-xml-heading p { margin: 0; color: #52655c; font-size: 12px; }
+.sd2-xml-heading > label { min-width: 280px; margin: 0; font-size: 11px; font-weight: 700; }
+.sd2-subject-apply { display: flex; gap: 6px; margin-top: 4px; }
+.sd2-subject-apply input { min-width: 0; }
+.sd2-xml-table-wrap { overflow: auto; max-height: 43vh; border: 1px solid #d7e0db; }
+.sd2-xml-table { min-width: 1280px; width: 100%; border-collapse: collapse; font-size: 11px; }
+.sd2-xml-table th { position: sticky; top: 0; z-index: 1; background: #eaf2ed; color: #214c39; white-space: nowrap; }
+.sd2-xml-table th,.sd2-xml-table td { padding: 5px; border-bottom: 1px solid #dce5df; }
+.sd2-xml-table input,.sd2-xml-table select { width: 100%; min-width: 95px; box-sizing: border-box; padding: 5px; font-size: 11px; }
+.sd2-xml-table td:nth-child(1),.sd2-xml-table td:nth-child(2) { white-space: nowrap; }
 .budget-overview .inactive-period { color: #9ba6a0; text-align: center; font-size: 15px !important; }
 .budget-overview-head { display: flex; align-items: center; gap: 22px; }
 .budget-heading { flex: 0 1 auto; min-width: 280px; }

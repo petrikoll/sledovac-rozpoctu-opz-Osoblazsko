@@ -145,6 +145,14 @@ class Sd2MonthlyEntry(BaseModel):
     other_with_contributions: Decimal = Decimal("0")
     other_without_contributions: Decimal = Decimal("0")
     payment_date: date | None = None
+    external_id: str = Field(default="", max_length=64)
+    subject_id: str = Field(default="", max_length=10)
+    last_name: str = Field(default="", max_length=255)
+    first_name: str = Field(default="", max_length=255)
+    employment_type: Literal["Smlouva", "DPC", "DPP", "DPPDo", "DPPNad"] | None = None
+    work_time_fund: Decimal = Decimal("0")
+    project_hours: Decimal = Decimal("0")
+    description: str = Field(default="", max_length=2000)
 
     @property
     def total_amount(self) -> Decimal:

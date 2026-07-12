@@ -19,6 +19,7 @@ from .calculations import final_settlement, lump_sum_metrics, propose_transfers
 from .models import CofinancingEntry, LumpSumEntry, Project, ProjectCreate, Sd2AttachmentRecord, Sd2MonthlyEntry, TransferCandidate
 from .pdf_parser import extract_budget_code, parse_payment_request
 from .repository import GoogleSheetsRepository, InMemoryRepository
+from .sd2_xml import build_sd2_xml
 from .storage import GoogleDriveStorage, LocalFileStorage
 from .xlsx_parser import export_transfer_proposal, export_with_formulas, parse_budget, validate_budget_structure
 
@@ -370,6 +371,20 @@ def save_sd2_monthly(project_id: str, body: dict, user=Depends(require_editor)):
     if google_repo and appended:
         google_repo.append_records("SD2_MESICE", [{**entry.model_dump(), "project_id": project_id, "created_at": datetime.utcnow().isoformat(), "created_by": user["email"]} for entry in appended])
     return [entry for entry in existing if entry.monitoring_period == period]
+
+
+@app.get("/api/projects/{project_id}/sd2-xml")
+def download_sd2_xml(project_id: str, period: int, user=Depends(current_user)):
+    p = project(project_id, user)
+    if p.project_code != SD2_PROJECT_CODE:
+        raise HTTPException(404, "Export SD-2 není pro tento projekt zapnutý.")
+    entries = [entry for entry in repo.sd2_entries[project_id] if entry.monitoring_period == period]
+    try:
+        content = build_sd2_xml(entries)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    headers = {"Content-Disposition": f'attachment; filename="SD-2_obdobi_{period}.xml"'}
+    return StreamingResponse(BytesIO(content), media_type="application/xml; charset=utf-8", headers=headers)
 
 
 @app.get("/api/projects/{project_id}/sd2-attachments")
