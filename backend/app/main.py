@@ -419,6 +419,23 @@ def download_sd2_xml(project_id: str, period: int, user=Depends(current_user)):
     return StreamingResponse(BytesIO(content), media_type="application/xml; charset=utf-8", headers=headers)
 
 
+@app.post("/api/projects/{project_id}/sd2-xml")
+def create_sd2_xml(project_id: str, period: int, body: dict, user=Depends(current_user)):
+    project(project_id, user)
+    entries = [Sd2MonthlyEntry.model_validate(value) for value in body.get("entries", [])]
+    allowed_codes = {item.code for item in sd2_budget_items(project_id)}
+    if not entries or any(entry.budget_item_code not in allowed_codes for entry in entries):
+        raise HTTPException(422, "XML obsahuje neplatnou rozpočtovou položku.")
+    if any(entry.monitoring_period != period for entry in entries):
+        raise HTTPException(422, "XML lze vytvořit pouze pro jedno monitorovací období.")
+    try:
+        content = build_sd2_xml(entries)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    headers = {"Content-Disposition": f'attachment; filename="SD-2_obdobi_{period}.xml"'}
+    return StreamingResponse(BytesIO(content), media_type="application/xml; charset=utf-8", headers=headers)
+
+
 @app.post("/api/projects/{project_id}/payroll-slips/analyze")
 async def analyze_payroll_slips(project_id: str, period: int, file: UploadFile = File(...), user=Depends(require_editor)):
     project(project_id, user)

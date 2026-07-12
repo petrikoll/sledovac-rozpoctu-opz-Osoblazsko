@@ -936,7 +936,7 @@ function Sd2MonthlyDialogNew({ id, period, projectCode, projectName, onClose }: 
     };
   }));
   async function save(close = true) { setSaving(true); setError(""); try { await api(`/projects/${id}/sd2-monthly`, { method: "PUT", body: JSON.stringify({ entries: makeEntries() }) }); await Promise.all([qc.invalidateQueries({ queryKey: ["budget-status", id] }), qc.invalidateQueries({ queryKey: ["sd2-monthly", id, period] })]); if (close) onClose(); return true; } catch (e) { setError(e instanceof Error ? e.message : "Podklad SD2 se nepodařilo uložit."); return false; } finally { setSaving(false); } }
-  async function exportXml() { if (await save(false)) { try { await downloadApi(`/projects/${id}/sd2-xml?period=${period}`, `SD-2_obdobi_${period}.xml`); } catch (e) { setError(e instanceof Error ? e.message : "XML SD-2 se nepodařilo vytvořit."); setXmlDetails(true); } } }
+  async function exportXml() { setError(""); try { await downloadApi(`/projects/${id}/sd2-xml?period=${period}`, `SD-2_obdobi_${period}.xml`, { method: "POST", body: JSON.stringify({ entries: makeEntries() }) }); } catch (e) { setError(e instanceof Error ? e.message : "XML SD-2 se nepodařilo vytvořit."); setXmlDetails(true); } }
   async function clearPeriod() {
     if (!window.confirm(`Opravdu chcete smazat všechny údaje SD-2 v ${period}. období? Soubory uložené na vašem Google Disku zůstanou zachované.`)) return;
     setSaving(true); setError("");

@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 from datetime import date
 from decimal import Decimal
+from types import SimpleNamespace
 from app.main import app, repo
 from app.models import Sd2MonthlyEntry
 
@@ -24,6 +25,26 @@ def test_delete_sd2_period_keeps_other_periods():
     assert response.status_code == 204
     assert [entry.monitoring_period for entry in repo.sd2_entries[project_id]] == [2]
     assert [entry["monitoring_period"] for entry in repo.sd2_attachments[project_id]] == [2]
+
+
+def test_sd2_xml_download_does_not_save_entries(monkeypatch):
+    project = client.post("/api/projects", json={"project_code": "CZ.XML", "project_name": "XML", "recipient_name": "P"}).json()
+    project_id = project["project_id"]
+    import app.main as main
+    monkeypatch.setattr(main, "sd2_budget_items", lambda _project_id: [SimpleNamespace(code="1.1.1.1")])
+    payload = {"entries": [{
+        "monitoring_period": 5, "month": "2026-07-01", "budget_item_code": "1.1.1.1",
+        "gross_wage": 1000, "employer_contributions": 338, "other_with_contributions": 0,
+        "other_without_contributions": 0, "payment_date": "2026-08-10", "subject_id": "12345678",
+        "last_name": "Nováková", "first_name": "Jana", "employment_type": "Smlouva",
+        "work_time_fund": 168, "project_hours": 80, "description": "",
+    }]}
+
+    response = client.post(f"/api/projects/{project_id}/sd2-xml?period=5", json=payload)
+
+    assert response.status_code == 200
+    assert b"<ns2:TYPDOKLADU>Mzdy</ns2:TYPDOKLADU>" in response.content
+    assert repo.sd2_entries[project_id] == []
 
 
 def test_health_and_project_crud():

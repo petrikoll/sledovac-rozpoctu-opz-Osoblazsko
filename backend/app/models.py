@@ -137,7 +137,7 @@ class CofinancingEntry(BaseModel):
 
 class Sd2MonthlyEntry(BaseModel):
     sd2_entry_id: str = Field(default_factory=lambda: str(uuid4()))
-    monitoring_period: int = Field(ge=1, le=4)
+    monitoring_period: int = Field(ge=1, le=20)
     month: date
     budget_item_code: str
     gross_wage: Decimal = Decimal("0")
