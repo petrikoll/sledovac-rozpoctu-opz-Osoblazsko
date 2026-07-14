@@ -148,6 +148,18 @@ def parse_payroll_list_page(text: str, page_number: int = 1) -> list[dict]:
                     position_name = lines[center_index + 1]
         except (ValueError, StopIteration):
             pass
+        vacation_hours = Decimal("0")
+        try:
+            vacation_index = lines.index("Čerpáno dov.", start, end)
+            vacation_value = next(line for line in lines[vacation_index + 1:end]
+                                  if re.fullmatch(r"[\d.,]+\s*hod\.", line, re.IGNORECASE))
+            vacation_hours = _number(re.sub(r"\s*hod\.$", "", vacation_value, flags=re.IGNORECASE))
+        except (ValueError, StopIteration):
+            pass
+        work_days = full_time_fund / Decimal("8") if full_time_fund else Decimal("0")
+        daily_hours = fund / work_days if work_days and fund else Decimal("0")
+        vacation_days = (vacation_hours / daily_hours).quantize(Decimal("0.01")) if daily_hours else Decimal("0")
+        total_fte = (fund / full_time_fund).quantize(Decimal("0.0001")) if full_time_fund and fund else Decimal("0")
         components: list[tuple[int, Decimal, str, str, str]] = []
         for index in range(start + 2, end - 1):
             if not re.fullmatch(r"[A-Z]\d{2}", lines[index]):
@@ -194,6 +206,9 @@ def parse_payroll_list_page(text: str, page_number: int = 1) -> list[dict]:
                 "employer_contributions": (amount * Decimal("0.338")).quantize(Decimal("0.01")) if insured else Decimal("0"),
                 "work_time_fund": fund if fund else worked_hours,
                 "full_time_fund": full_time_fund,
+                "total_fte": total_fte,
+                "vacation_hours": vacation_hours,
+                "vacation_days": vacation_days,
                 "worked_hours": worked_hours,
                 "project_hours": worked_hours,
                 "employment_type": employment_type,
@@ -259,8 +274,17 @@ def parse_payslip_insurance(data: bytes) -> list[dict]:
                             amounts.append(value)
                     except ValueError:
                         pass
-                if amounts:
+                vacation_hours = Decimal("0")
+                try:
+                    vacation_index = block.index("Dovolená")
+                    vacation_value = next(line for line in block[vacation_index + 1:]
+                                          if re.fullmatch(r"[\d.,]+\s*h(?:od)?\.?", line, re.IGNORECASE))
+                    vacation_hours = _number(re.sub(r"\s*h(?:od)?\.?$", "", vacation_value, flags=re.IGNORECASE))
+                except (ValueError, StopIteration):
+                    pass
+                if amounts or vacation_hours:
                     results.append({"full_name": full_name, "first_name": first_name, "last_name": last_name,
                                     "month": month.isoformat(), "contract_name": contract_name,
-                                    "employer_insurance": sum(amounts, Decimal("0"))})
+                                    "employer_insurance": sum(amounts, Decimal("0")),
+                                    "vacation_hours": vacation_hours})
     return results

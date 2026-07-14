@@ -74,7 +74,7 @@ type CurrentUser = { email: string; role: string };
 type Sd2Entry = { sd2_entry_id?: string; monitoring_period: number; month: string; budget_item_code: string; gross_wage: number; employer_contributions: number; other_with_contributions: number; other_without_contributions: number; payment_date?: string | null; external_id?: string; subject_id?: string; last_name?: string; first_name?: string; employment_type?: "Smlouva" | "DPC" | "DPP" | "DPPDo" | "DPPNad" | null; work_time_fund?: number; project_hours?: number; description?: string };
 type WorkerAssignment = { budget_item_code: string; employee_names: string; employee_name?: string; project_fte?: number | null; payroll_component_amount?: number | null; contract_contains?: string };
 type WorkerRule = { employee_name: string; project_fte: string; payroll_component_amount: string; contract_contains: string };
-type PayrollRow = { source_key: string; page_number: number; full_name: string; last_name: string; first_name: string; subject_id?: string; category: string; contract_name?: string; position_name?: string; component_code?: string; component_name?: string; component_description?: string; component_amount?: number; other_with_contributions?: number; project_bonus_available?: number; project_bonus_label?: string; employer_contribution_rate?: number; month: string; gross_wage: number; employer_contributions: number; work_time_fund: number; worked_hours: number; project_hours?: number; project_fte?: number; employment_type: Sd2Entry["employment_type"]; budget_item_code: string; match_status: "matched" | "unmatched" | "ignored" };
+type PayrollRow = { source_key: string; page_number: number; full_name: string; last_name: string; first_name: string; subject_id?: string; category: string; contract_name?: string; position_name?: string; component_code?: string; component_name?: string; component_description?: string; component_amount?: number; other_with_contributions?: number; project_bonus_available?: number; project_bonus_label?: string; employer_contribution_rate?: number; total_fte?: number; vacation_days?: number; vacation_hours?: number; project_vacation_hours?: number; month: string; gross_wage: number; employer_contributions: number; work_time_fund: number; worked_hours: number; project_hours?: number; project_fte?: number; employment_type: Sd2Entry["employment_type"]; budget_item_code: string; match_status: "matched" | "unmatched" | "ignored" };
 type PayrollPreview = { file_name: string; period: number; rows: PayrollRow[]; budget_items: { code: string; name: string }[] };
 const CLIENT_ID =
   import.meta.env.VITE_GOOGLE_CLIENT_ID ||
@@ -1031,6 +1031,26 @@ function Sd2MonthlyDialogNew({ id, period, projectCode, projectName, onClose }: 
     const mode = payrollBonusMode[index] || "exclude";
     return mode === "all" ? Number(row.project_bonus_available || 0) : mode === "partial" ? Number(payrollBonusAmount[index] || 0) : 0;
   }
+  function payrollDescription(row: PayrollRow, index: number, projectHours: number) {
+    const number = (value: number, digits = 2) => new Intl.NumberFormat("cs-CZ", { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(value);
+    const hours = (value: number) => number(value, Number.isInteger(value) ? 0 : 2);
+    if (row.employment_type === "Smlouva") {
+      const vacationHours = Number(row.vacation_hours || 0);
+      const vacationDays = Number(row.vacation_days || 0);
+      const projectVacation = row.project_vacation_hours != null ? Number(row.project_vacation_hours) : Number(row.work_time_fund) ? vacationHours * projectHours / Number(row.work_time_fund) : 0;
+      const parts = [`Pracovní smlouva; celková výše úvazku u zaměstnavatele: ${number(Number(row.total_fte || 0))}; dovolená: ${hours(vacationDays)} dní, ${hours(vacationHours)} hodin celkem, z toho ${hours(projectVacation)} hodin pro projekt.`];
+      const availableBonus = Number(row.project_bonus_available || 0);
+      if (availableBonus > 0) {
+        const selectedBonus = selectedProjectBonus(row, index);
+        if (selectedBonus <= 0) parts.push(`Mimořádná odměna ${czk.format(availableBonus)} – mimo projekt.`);
+        else if (selectedBonus >= availableBonus) parts.push(`Mimořádná odměna ${czk.format(availableBonus)} – celá zahrnuta do projektu.`);
+        else parts.push(`Mimořádná odměna ${czk.format(availableBonus)}; do projektu zahrnuto ${czk.format(selectedBonus)}.`);
+      }
+      return parts.join(" ");
+    }
+    const relation = row.employment_type === "DPC" ? "Dohoda o pracovní činnosti" : row.employment_type?.startsWith("DPP") ? "Dohoda o provedení práce" : "Pracovněprávní vztah";
+    return `${relation}; fond vztahu: ${hours(Number(row.work_time_fund || 0))} hodin; počet hodin na projektu: ${hours(projectHours)}.`;
+  }
   function applyPayroll() {
     if (!payrollPreview) return;
     if (payrollPreview.rows.some((_, index) => !payrollMapping[index])) { setError("U každé mzdové složky vyberte rozpočtovou položku nebo Nezahrnovat do projektu."); return; }
@@ -1049,17 +1069,18 @@ function Sd2MonthlyDialogNew({ id, period, projectCode, projectName, onClose }: 
     setExtraMonths(current => Array.from(new Set([...current, ...included.map(item => item.row.month)])));
     setChanges(current => {
       const next = { ...current };
-      const grouped = new Map<string, { row: PayrollRow; gross: number; contributions: number; correction: number; fund: number; projectHours: number }>();
+      const grouped = new Map<string, { row: PayrollRow; gross: number; contributions: number; correction: number; fund: number; projectHours: number; description: string }>();
       included.forEach(({ row, index, code }) => {
         const groupKey = `${code}|${row.month}`; const existing = grouped.get(groupKey);
         const projectHours = Number(payrollProjectHours[index] ?? row.project_hours ?? row.worked_hours) || 0;
         const projectBonus = selectedProjectBonus(row, index);
         const contributions = Number(row.employer_contributions) + projectBonus * Number(row.employer_contribution_rate ?? 0.338);
         const correction = Number(row.other_with_contributions || 0) + projectBonus;
-        if (existing) { existing.gross += Number(row.gross_wage); existing.contributions += contributions; existing.correction += correction; existing.fund = Math.max(existing.fund, Number(row.work_time_fund)); existing.projectHours = Math.max(existing.projectHours, projectHours); }
-        else grouped.set(groupKey, { row, gross: Number(row.gross_wage), contributions, correction, fund: Number(row.work_time_fund), projectHours });
+        const description = payrollDescription(row, index, projectHours);
+        if (existing) { existing.gross += Number(row.gross_wage); existing.contributions += contributions; existing.correction += correction; existing.fund = Math.max(existing.fund, Number(row.work_time_fund)); existing.projectHours = Math.max(existing.projectHours, projectHours); if (!existing.description.includes(description)) existing.description += ` ${description}`; }
+        else grouped.set(groupKey, { row, gross: Number(row.gross_wage), contributions, correction, fund: Number(row.work_time_fund), projectHours, description });
       });
-      grouped.forEach(({ row, gross, contributions, correction, fund, projectHours }, groupKey) => {
+      grouped.forEach(({ row, gross, contributions, correction, fund, projectHours, description }, groupKey) => {
         const [code, month] = groupKey.split("|"); const key = `${code}|${month}|`;
         Object.assign(next, {
           [`${key}gross_wage`]: Math.round(gross * 100) / 100, [`${key}employer_contributions`]: Math.round(contributions * 100) / 100,
@@ -1068,6 +1089,7 @@ function Sd2MonthlyDialogNew({ id, period, projectCode, projectName, onClose }: 
           [`${key}first_name`]: row.first_name, [`${key}last_name`]: row.last_name,
           [`${key}employment_type`]: row.employment_type || employmentFor(code),
           [`${key}subject_id`]: row.subject_id || defaultSubjectId,
+          [`${key}description`]: description,
         });
       });
       return next;

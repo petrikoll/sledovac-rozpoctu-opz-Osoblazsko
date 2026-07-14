@@ -383,6 +383,9 @@ def _mosty_payroll_rows(rows: list[dict], allowed: set[str]) -> list[dict]:
         insurance_rate = (Decimal(str(exact_insurance)) / gross
                           if exact_insurance is not None and gross else Decimal("0.338"))
         insurance = (target_wage * insurance_rate).quantize(Decimal("0.01"))
+        vacation_hours = Decimal(str(source.get("vacation_hours", 0)))
+        project_vacation_hours = ((vacation_hours * hours / fund).quantize(Decimal("0.01"))
+                                  if fund else Decimal("0"))
         value.update({
             "source_key": f'{source["source_key"]}-sd2-{code}', "budget_item_code": code if code in allowed else "",
             "match_status": "matched" if code in allowed else "unmatched", "gross_wage": gross,
@@ -392,6 +395,7 @@ def _mosty_payroll_rows(rows: list[dict], allowed: set[str]) -> list[dict]:
             "employer_contribution_rate": insurance_rate,
             "project_bonus_available": project_bonus_available,
             "project_bonus_label": project_bonus_label,
+            "project_vacation_hours": project_vacation_hours,
             "component_description": note or source.get("component_description", ""),
         })
         result.append(value)
@@ -531,11 +535,17 @@ async def analyze_payroll_slips(project_id: str, period: int, files: list[Upload
         insurance_rows.extend(parse_payslip_insurance(data))
     if not rows:
         raise HTTPException(422, "Nebyl nalezen podporovaný výplatní list.")
-    insurance_by_key = {(normalized_name(f'{item["first_name"]} {item["last_name"]}'), item["month"], normalized_name(item["contract_name"])): item["employer_insurance"] for item in insurance_rows}
+    payslip_by_key = {(normalized_name(f'{item["first_name"]} {item["last_name"]}'), item["month"], normalized_name(item["contract_name"])): item for item in insurance_rows}
     for row in rows:
         key = (normalized_name(f'{row.get("first_name", "")} {row.get("last_name", "")}'), row["month"], normalized_name(str(row.get("contract_name", ""))))
-        if key in insurance_by_key:
-            row["contract_employer_insurance"] = insurance_by_key[key]
+        payslip = payslip_by_key.get(key)
+        if payslip:
+            row["contract_employer_insurance"] = payslip.get("employer_insurance", 0)
+            row["vacation_hours"] = payslip.get("vacation_hours", row.get("vacation_hours", 0))
+            fund = Decimal(str(row.get("work_time_fund", 0)))
+            full_fund = Decimal(str(row.get("full_time_fund", 0)))
+            daily_hours = fund / (full_fund / Decimal("8")) if fund and full_fund else Decimal("0")
+            row["vacation_days"] = (Decimal(str(row["vacation_hours"])) / daily_hours).quantize(Decimal("0.01")) if daily_hours else Decimal("0")
     assignments = repo.worker_assignments[project_id]
     assignment_rules: dict[str, list[dict]] = defaultdict(list)
     for assignment in assignments:

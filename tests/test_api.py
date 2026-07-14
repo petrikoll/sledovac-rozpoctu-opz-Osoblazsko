@@ -15,13 +15,14 @@ def test_mosty_malikova_bonus_is_offered_but_excluded_by_default():
         "source_key": "malikova", "first_name": "Silvie", "last_name": "Malíková",
         "month": "2026-05-01", "contract_name": "PS", "contract_gross": Decimal("77143"),
         "work_time_fund": Decimal("134.4"), "full_time_fund": Decimal("168"),
+        "total_fte": Decimal("0.8"), "vacation_hours": Decimal("16"), "vacation_days": Decimal("2.5"),
         "employment_type": "Smlouva", "component_name": "Základní mzda",
     }
     rows = [
         {**base, "source_key": "m1", "component_code": "M01", "component_occurrence": 1, "component_amount": Decimal("51000")},
         {**base, "source_key": "m2", "component_code": "M01", "component_occurrence": 2, "component_amount": Decimal("5381")},
         {**base, "source_key": "m3", "component_code": "M01", "component_occurrence": 3, "component_amount": Decimal("10762")},
-        {**base, "source_key": "b1", "component_code": "C01", "component_occurrence": 1, "component_name": "Prémie pevnou částkou", "component_amount": Decimal("10000")},
+        {**base, "source_key": "b1", "component_code": "O01", "component_occurrence": 1, "component_name": "Prémie pevnou částkou", "component_amount": Decimal("10000")},
     ]
 
     result = _mosty_payroll_rows(rows, {"1.1.1.3"})
@@ -30,6 +31,7 @@ def test_mosty_malikova_bonus_is_offered_but_excluded_by_default():
     assert result[0]["component_amount"] == Decimal("10762")
     assert result[0]["other_with_contributions"] == Decimal("-8523.75")
     assert result[0]["project_bonus_available"] == Decimal("10000")
+    assert result[0]["project_vacation_hours"] == Decimal("4.00")
 
 
 def test_srssjesenik_can_only_view_jesenicko_project():

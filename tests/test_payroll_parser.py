@@ -57,6 +57,8 @@ Pracovní pozice
 Středisko
 Sociální pracovník
 176 hod.
+Čerpáno dov.
+16 hod.
 25 500
 M01
 Základní mzda
@@ -79,3 +81,6 @@ Hrubá mzda
     assert rows[0]["first_name"] == "Martina"
     assert rows[0]["last_name"] == "Pírková"
     assert rows[0]["full_time_fund"] == Decimal("176")
+    assert rows[0]["total_fte"] == Decimal("1.0000")
+    assert rows[0]["vacation_hours"] == Decimal("16")
+    assert rows[0]["vacation_days"] == Decimal("2.00")
