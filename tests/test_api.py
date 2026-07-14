@@ -89,6 +89,37 @@ def test_financial_plan_coverage_deducts_recipient_cofinancing():
     assert Decimal(str(listed[0]["financial_plan_provider_payment"])) == Decimal("1258286.40")
 
 
+def test_pdf_paid_amount_wins_over_one_cent_rounding_difference():
+    project = client.post("/api/projects", json={
+        "project_code": "CZ.ROUND", "project_name": "Zaokrouhlení", "recipient_name": "Příjemce",
+        "public_funding_rate": "0.95",
+    }).json()
+    payment = _payment(2, state="Proplacená", processing_state="Proplacená příjemci/Vypořádaná",
+                       public_payment=Decimal("578689.64"))
+    payment.financial_plan_coverage_actual = Decimal("609147.00")
+    payment.financial_plan_state = "Proplacená příjemci/Vypořádaná"
+    repo.payments[project["project_id"]] = [payment]
+
+    data = client.get(f"/api/projects/{project['project_id']}/final-settlement").json()
+
+    assert Decimal(str(data["net_received"])) == Decimal("578689.64")
+
+
+def test_planned_financial_plan_row_is_not_counted_as_received():
+    project = client.post("/api/projects", json={
+        "project_code": "CZ.PLANNED", "project_name": "Plán", "recipient_name": "Příjemce",
+        "public_funding_rate": "0.95",
+    }).json()
+    payment = _payment(7, state="Zaregistrovaná", processing_state="Zaregistrovaná", final=True)
+    payment.financial_plan_coverage_actual = Decimal("0.01")
+    payment.financial_plan_state = "Plánovaná"
+    repo.payments[project["project_id"]] = [payment]
+
+    data = client.get(f"/api/projects/{project['project_id']}/final-settlement").json()
+
+    assert Decimal(str(data["net_received"])) == Decimal("0.00")
+
+
 def test_mosty_malikova_bonus_is_offered_but_excluded_by_default():
     from app.main import _mosty_payroll_rows
 

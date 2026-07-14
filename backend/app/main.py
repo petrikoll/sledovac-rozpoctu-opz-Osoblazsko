@@ -291,6 +291,23 @@ def _financial_plan_changes(plan: dict, sequence_number: int) -> dict | None:
     }
 
 
+def _plain_status(value: str) -> str:
+    return "".join(char for char in unicodedata.normalize("NFKD", value or "")
+                   if not unicodedata.combining(char)).lower()
+
+
+def _provider_payment_from_plan(payment_item, funding_rate: Decimal) -> Decimal:
+    """Resolve actual provider cash while preserving official cent rounding from the PDF."""
+    status = payment_item.financial_plan_state or f"{payment_item.state} {payment_item.processing_state}"
+    if not any(marker in _plain_status(status) for marker in ("proplacena", "vyporadana")):
+        return Decimal("0")
+    calculated = q(payment_item.financial_plan_coverage_actual * funding_rate)
+    pdf_amount = payment_item.public_payment
+    if pdf_amount > 0 and abs(pdf_amount - calculated) <= Decimal("0.02"):
+        return pdf_amount
+    return calculated
+
+
 def _apply_financial_plan(project_id: str, plan: dict) -> int:
     applied = 0
     for payment_item in repo.payments[project_id]:
@@ -326,7 +343,7 @@ async def analyze_payment(project_id: str, file: UploadFile = File(...), financi
             setattr(result, key, value)
     token = str(uuid4())
     analyses[token] = {"kind": "payment", "project_id": project_id, "result": result, "financial_plan": plan}
-    provider_payment = (q(result.financial_plan_coverage_actual * p.public_funding_rate)
+    provider_payment = (_provider_payment_from_plan(result, p.public_funding_rate)
                         if result.financial_plan_coverage_actual is not None else None)
     return {"token": token, "financial_plan_required": result.is_final_payment,
             "financial_plan_attached": plan is not None,
@@ -371,7 +388,7 @@ def payments(project_id: str, user=Depends(current_user)):
     p = project(project_id, user)
     return [{**item.model_dump(),
              "financial_plan_provider_payment": (
-                 q(item.financial_plan_coverage_actual * p.public_funding_rate)
+                 _provider_payment_from_plan(item, p.public_funding_rate)
                  if item.financial_plan_coverage_actual is not None else None)}
             for item in repo.payments[project_id]]
 
@@ -991,7 +1008,7 @@ def download_proposal(project_id: str, proposal_id: str, user=Depends(require_ed
 
 
 def _normalized_status(value: str) -> str:
-    return "".join(char for char in unicodedata.normalize("NFKD", value or "") if not unicodedata.combining(char)).lower()
+    return _plain_status(value)
 
 
 def _payment_is_approved(payment) -> bool:
@@ -1022,7 +1039,7 @@ def _settlement_breakdown(project_id: str, user: dict) -> dict:
         recognized_lump = payment.approved_lump_sum if approved and not payment.is_advance_payment else Decimal("0")
         recognized_total = recognized_direct + recognized_lump
         projected_row_total = recognized_total if approved else (declared_total if not payment.is_advance_payment else Decimal("0"))
-        received_payment = (q(payment.financial_plan_coverage_actual * p.public_funding_rate)
+        received_payment = (_provider_payment_from_plan(payment, p.public_funding_rate)
                             if payment.financial_plan_coverage_actual is not None
                             else (payment.public_payment if paid else Decimal("0")))
 
