@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from app.payroll_parser import parse_payroll_page
+from app.payroll_parser import parse_payroll_list_page, parse_payroll_page
 
 
 def test_parse_payroll_page_extracts_sd2_values_without_sensitive_data():
@@ -37,3 +37,45 @@ def test_parse_payroll_page_handles_reversed_name_and_legacy_dpp():
     assert row["first_name"] == "Vendula"
     assert row["last_name"] == "Černochová"
     assert row["employment_type"] == "DPPDo"
+
+
+def test_parse_payroll_list_keeps_repeated_wage_components_separate():
+    text = """
+Výplatní list
+Jméno
+Osobní číslo
+Z0019
+Narození
+Období
+6 / 2026
+16.03.1969, Vsetín
+Bc. Martina Pírková
+Název/Druh PP
+PS Mosty v rodině
+Fond
+Pracovní pozice
+Středisko
+Sociální pracovník
+176 hod.
+25 500
+M01
+Základní mzda
+měsíčně 25 500 Kč, základní prac. doba 176 hod
+14 500
+M01
+Základní mzda
+měsíčně 14 500 Kč, základní prac. doba 176 hod
+1 800
+M06
+Osobní ohodnocení
+měsíčně 1 800 Kč
+Hrubá mzda
+41 800
+"""
+    rows = parse_payroll_list_page(text)
+
+    assert [row["component_occurrence"] for row in rows] == [1, 2, 1]
+    assert [row["component_amount"] for row in rows] == [Decimal("25500"), Decimal("14500"), Decimal("1800")]
+    assert rows[0]["first_name"] == "Martina"
+    assert rows[0]["last_name"] == "Pírková"
+    assert rows[0]["full_time_fund"] == Decimal("176")

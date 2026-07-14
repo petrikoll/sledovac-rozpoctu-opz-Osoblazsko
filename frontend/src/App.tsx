@@ -72,8 +72,9 @@ type BudgetVersion = {
 };
 type CurrentUser = { email: string; role: string };
 type Sd2Entry = { sd2_entry_id?: string; monitoring_period: number; month: string; budget_item_code: string; gross_wage: number; employer_contributions: number; other_with_contributions: number; other_without_contributions: number; payment_date?: string | null; external_id?: string; subject_id?: string; last_name?: string; first_name?: string; employment_type?: "Smlouva" | "DPC" | "DPP" | "DPPDo" | "DPPNad" | null; work_time_fund?: number; project_hours?: number; description?: string };
-type WorkerAssignment = { budget_item_code: string; employee_names: string };
-type PayrollRow = { page_number: number; full_name: string; last_name: string; first_name: string; category: string; month: string; gross_wage: number; employer_contributions: number; work_time_fund: number; worked_hours: number; employment_type: Sd2Entry["employment_type"]; budget_item_code: string; match_status: "matched" | "unmatched" };
+type WorkerAssignment = { budget_item_code: string; employee_names: string; employee_name?: string; project_fte?: number | null; payroll_component_amount?: number | null; contract_contains?: string };
+type WorkerRule = { employee_name: string; project_fte: string; payroll_component_amount: string; contract_contains: string };
+type PayrollRow = { source_key: string; page_number: number; full_name: string; last_name: string; first_name: string; subject_id?: string; category: string; contract_name?: string; position_name?: string; component_code?: string; component_name?: string; component_description?: string; component_amount?: number; other_with_contributions?: number; month: string; gross_wage: number; employer_contributions: number; work_time_fund: number; worked_hours: number; project_hours?: number; project_fte?: number; employment_type: Sd2Entry["employment_type"]; budget_item_code: string; match_status: "matched" | "unmatched" | "ignored" };
 type PayrollPreview = { file_name: string; period: number; rows: PayrollRow[]; budget_items: { code: string; name: string }[] };
 const CLIENT_ID =
   import.meta.env.VITE_GOOGLE_CLIENT_ID ||
@@ -1013,39 +1014,50 @@ function Sd2MonthlyDialogNew({ id, period, projectCode, projectName, onClose }: 
     finally { setSaving(false); }
   }
   function applySubjectId() { setChanges(current => { const next = { ...current }; for (const code of sd2Codes) for (const month of months) next[`${code}|${month}|subject_id`] = defaultSubjectId; return next; }); }
-  async function analyzePayroll(file: File) {
+  async function analyzePayroll(files: File[]) {
     setAnalyzingPayroll(true); setError(""); setPayrollPreview(null);
     try {
-      const form = new FormData(); form.append("file", file);
+      const form = new FormData(); files.forEach(file => form.append("files", file));
       const preview = await api<PayrollPreview>(`/projects/${id}/payroll-slips/analyze?period=${period}`, { method: "POST", body: form });
       setPayrollPreview(preview);
       setPayrollMapping(Object.fromEntries(preview.rows.map((row, index) => [index, row.budget_item_code || ""])));
-      setPayrollProjectHours(Object.fromEntries(preview.rows.map((row, index) => [index, String(row.worked_hours)])));
-    } catch (e) { setError(e instanceof Error ? e.message : "Výplatní pásky se nepodařilo načíst."); }
+      setPayrollProjectHours(Object.fromEntries(preview.rows.map((row, index) => [index, String(row.project_hours ?? row.worked_hours)])));
+    } catch (e) { setError(e instanceof Error ? e.message : "Výplatní listy se nepodařilo načíst."); }
     finally { setAnalyzingPayroll(false); }
   }
   function applyPayroll() {
     if (!payrollPreview) return;
-    if (payrollPreview.rows.some((_, index) => !payrollMapping[index])) { setError("U každého pracovníka vyberte rozpočtovou položku."); return; }
-    const keys = payrollPreview.rows.map((row, index) => `${payrollMapping[index]}|${row.month}`);
-    if (new Set(keys).size !== keys.length) { setError("Dva pracovníci jsou přiřazeni ke stejné položce a měsíci. Každý záznam SD-2 musí mít samostatnou rozpočtovou položku."); return; }
-    if (configuredMonths.length && payrollPreview.rows.some(row => !configuredMonths.includes(row.month))) { setError(`Výplatní pásky nepatří do ${period}. monitorovacího období.`); return; }
-    setExtraMonths(current => Array.from(new Set([...current, ...payrollPreview.rows.map(row => row.month)])));
+    if (payrollPreview.rows.some((_, index) => !payrollMapping[index])) { setError("U každé mzdové složky vyberte rozpočtovou položku nebo Nezahrnovat do projektu."); return; }
+    const included = payrollPreview.rows.map((row, index) => ({ row, index, code: payrollMapping[index] })).filter(item => item.code !== "__ignore__");
+    if (!included.length) { setError("Nebyla vybrána žádná mzdová složka pro projekt."); return; }
+    if (configuredMonths.length && included.some(item => !configuredMonths.includes(item.row.month))) { setError(`Výplatní listy nepatří do ${period}. monitorovacího období.`); return; }
+    const peopleByKey = new Map<string, Set<string>>();
+    included.forEach(({ row, code }) => { const key = `${code}|${row.month}`; const people = peopleByKey.get(key) || new Set<string>(); people.add(`${row.first_name}|${row.last_name}`); peopleByKey.set(key, people); });
+    if ([...peopleByKey.values()].some(people => people.size > 1)) { setError("Dva různí pracovníci jsou přiřazeni ke stejné položce a měsíci. Pro XML SD-2 potřebují samostatné rozpočtové položky."); return; }
+    setExtraMonths(current => Array.from(new Set([...current, ...included.map(item => item.row.month)])));
     setChanges(current => {
       const next = { ...current };
-      payrollPreview.rows.forEach((row, index) => {
-        const code = payrollMapping[index]; const key = `${code}|${row.month}|`;
+      const grouped = new Map<string, { row: PayrollRow; gross: number; contributions: number; correction: number; fund: number; projectHours: number }>();
+      included.forEach(({ row, index, code }) => {
+        const groupKey = `${code}|${row.month}`; const existing = grouped.get(groupKey);
+        const projectHours = Number(payrollProjectHours[index] ?? row.project_hours ?? row.worked_hours) || 0;
+        if (existing) { existing.gross += Number(row.gross_wage); existing.contributions += Number(row.employer_contributions); existing.correction += Number(row.other_with_contributions || 0); existing.fund = Math.max(existing.fund, Number(row.work_time_fund)); existing.projectHours = Math.max(existing.projectHours, projectHours); }
+        else grouped.set(groupKey, { row, gross: Number(row.gross_wage), contributions: Number(row.employer_contributions), correction: Number(row.other_with_contributions || 0), fund: Number(row.work_time_fund), projectHours });
+      });
+      grouped.forEach(({ row, gross, contributions, correction, fund, projectHours }, groupKey) => {
+        const [code, month] = groupKey.split("|"); const key = `${code}|${month}|`;
         Object.assign(next, {
-          [`${key}gross_wage`]: row.gross_wage, [`${key}employer_contributions`]: row.employer_contributions,
-          [`${key}work_time_fund`]: row.work_time_fund, [`${key}project_hours`]: payrollProjectHours[index] ?? row.worked_hours,
+          [`${key}gross_wage`]: Math.round(gross * 100) / 100, [`${key}employer_contributions`]: Math.round(contributions * 100) / 100,
+          [`${key}other_with_contributions`]: Math.round(correction * 100) / 100,
+          [`${key}work_time_fund`]: fund, [`${key}project_hours`]: projectHours,
           [`${key}first_name`]: row.first_name, [`${key}last_name`]: row.last_name,
           [`${key}employment_type`]: row.employment_type || employmentFor(code),
-          [`${key}subject_id`]: defaultSubjectId,
+          [`${key}subject_id`]: row.subject_id || defaultSubjectId,
         });
       });
       return next;
     });
-    setPayrollPreview(null); setUploadNotice("Údaje z výplatních pásek byly načteny. Doplňte datum úhrady a zkontrolujte projektové hodiny."); window.setTimeout(() => setUploadNotice(""), 9000);
+    setPayrollPreview(null); setUploadNotice("Údaje z výplatních listů byly načteny. Doplňte datum úhrady a zkontrolujte projektové hodiny."); window.setTimeout(() => setUploadNotice(""), 9000);
   }
   async function connectDrive() {
     setError("");
@@ -1077,12 +1089,12 @@ function Sd2MonthlyDialogNew({ id, period, projectCode, projectName, onClose }: 
   return <div className="sd2-overlay" role="dialog" aria-modal="true"><section className="sd2-dialog">
     <div className="sd2-dialog-head">
       <div><h2>Podklad SD2 — {period}. období</h2><p>Měsíční údaje se zobrazí v příslušném období jako podklad před ŽoP.</p></div>
-      <div className="sd2-attachments"><label className="upload-button">{analyzingPayroll ? "Načítám pásky…" : "Načíst výplatní pásky PDF"}<input type="file" accept=".pdf,application/pdf" disabled={analyzingPayroll} onChange={e => e.target.files?.[0] && analyzePayroll(e.target.files[0])} /></label>{driveToken ? <label className="upload-button">{uploading ? "Ukládám archiv…" : "Vybrat archiv ZIP / RAR"}<input type="file" accept=".zip,.rar" disabled={uploading} onChange={e => e.target.files?.[0] && upload(e.target.files[0])} /></label> : <button className="upload-button" onClick={connectDrive}>Připojit Google Drive</button>}{uploadNotice && <small className="sd2-upload-notice">{uploadNotice}</small>}</div>
+      <div className="sd2-attachments"><label className="upload-button">{analyzingPayroll ? "Načítám mzdové podklady…" : "Načíst výplatní listy a pásky PDF"}<input type="file" accept=".pdf,application/pdf" multiple disabled={analyzingPayroll} onChange={e => e.target.files?.length && analyzePayroll(Array.from(e.target.files))} /></label>{driveToken ? <label className="upload-button">{uploading ? "Ukládám archiv…" : "Vybrat archiv ZIP / RAR"}<input type="file" accept=".zip,.rar" disabled={uploading} onChange={e => e.target.files?.[0] && upload(e.target.files[0])} /></label> : <button className="upload-button" onClick={connectDrive}>Připojit Google Drive</button>}{uploadNotice && <small className="sd2-upload-notice">{uploadNotice}</small>}</div>
       <button className="secondary" onClick={onClose}>Zavřít</button>
     </div>
     {error && <div className="alert sd2-error">{error}</div>}
-    {payrollPreview && <section className="payroll-preview"><div className="payroll-preview-head"><div><h3>Kontrola načtených výplatních pásek</h3><p>Rodná čísla ani bankovní účty aplikace neukládá. Zkontrolujte položku a hodiny na projektu.</p></div><button type="button" className="secondary" onClick={() => setPayrollPreview(null)}>Zrušit</button></div><div className="table-wrap"><table><thead><tr><th>Pracovník</th><th>Měsíc</th><th>Hrubá mzda</th><th>Pojistné zaměstnavatele</th><th>Fond</th><th>Hodiny na projektu</th><th>Rozpočtová položka</th></tr></thead><tbody>{payrollPreview.rows.map((row, index) => <tr key={`${row.page_number}-${row.full_name}`}><td><b>{row.full_name}</b><small>{row.category} · {row.employment_type}</small></td><td>{new Date(`${row.month}T00:00:00Z`).toLocaleDateString("cs-CZ", { month: "long", year: "numeric" })}</td><td>{czk.format(row.gross_wage)}</td><td>{czk.format(row.employer_contributions)}</td><td>{row.work_time_fund}</td><td><input type="number" min="0" step="0.01" value={payrollProjectHours[index] ?? row.worked_hours} onChange={e => setPayrollProjectHours(current => ({ ...current, [index]: e.target.value }))} /></td><td><select className={!payrollMapping[index] ? "unmatched" : ""} value={payrollMapping[index] || ""} onChange={e => setPayrollMapping(current => ({ ...current, [index]: e.target.value }))}><option value="">Vyberte položku…</option>{payrollPreview.budget_items.map(item => <option key={item.code} value={item.code}>{item.code} — {item.name}</option>)}</select></td></tr>)}</tbody></table></div><div className="payroll-preview-actions"><button type="button" onClick={applyPayroll}>Převzít do SD-2</button></div></section>}
-    {!months.length && !payrollPreview && <div className="sd2-empty"><b>V tomto období zatím nejsou měsíční údaje.</b><span>Nahrajte PDF s výplatními páskami; měsíc se načte automaticky.</span></div>}
+    {payrollPreview && <section className="payroll-preview"><div className="payroll-preview-head"><div><h3>Kontrola načtených výplatních listů</h3><p>Každá mzdová složka je samostatně. Mimoprojektové úvazky označte „Nezahrnovat do projektu“.</p></div><button type="button" className="secondary" onClick={() => setPayrollPreview(null)}>Zrušit</button></div><div className="table-wrap"><table><thead><tr><th>Pracovník</th><th>Pracovní vztah</th><th>Mzdová složka</th><th>Měsíc</th><th>Částka</th><th>Pojistné</th><th>Fond</th><th>Hodiny projektu</th><th>Rozpočtová položka</th></tr></thead><tbody>{payrollPreview.rows.map((row, index) => <tr key={row.source_key || `${row.page_number}-${index}`}><td><b>{row.full_name}</b><small>{row.position_name}</small></td><td>{row.contract_name || row.category}<small>{row.employment_type}</small></td><td>{row.component_name || "Hrubá mzda"}<small>{row.component_description}</small></td><td>{new Date(`${row.month}T00:00:00Z`).toLocaleDateString("cs-CZ", { month: "long", year: "numeric" })}</td><td>{czk.format(row.component_amount ?? row.gross_wage)}</td><td>{czk.format(row.employer_contributions)}</td><td>{row.work_time_fund}</td><td><input type="number" min="0" step="0.01" value={payrollProjectHours[index] ?? row.project_hours ?? row.worked_hours} onChange={e => setPayrollProjectHours(current => ({ ...current, [index]: e.target.value }))} /></td><td><select className={!payrollMapping[index] ? "unmatched" : ""} value={payrollMapping[index] || ""} onChange={e => setPayrollMapping(current => ({ ...current, [index]: e.target.value }))}><option value="">Vyberte položku…</option><option value="__ignore__">Nezahrnovat do projektu</option>{payrollPreview.budget_items.map(item => <option key={item.code} value={item.code}>{item.code} — {item.name}</option>)}</select></td></tr>)}</tbody></table></div><div className="payroll-preview-actions"><button type="button" onClick={applyPayroll}>Převzít do SD-2</button></div></section>}
+    {!months.length && !payrollPreview && <div className="sd2-empty"><b>V tomto období zatím nejsou měsíční údaje.</b><span>Nahrajte PDF s výplatními listy; měsíc se načte automaticky.</span></div>}
     <div className="sd2-grid-wrap"><table className="sd2-grid"><thead><tr><th>Položka</th>{months.map(month => <th key={month}>{new Date(`${month}T00:00:00Z`).toLocaleDateString("cs-CZ", { month: "long", year: "numeric" })}</th>)}</tr></thead><tbody>{sd2Codes.map(code => <tr key={code}><th><b>{code}</b><small>{SD2_ITEM_NAMES[code] || sd2Names[code]}</small></th>{months.map(month => { const noContributions = code === "1.1.3.1"; return <td key={month}><label>Hrubá mzda / odměna<input type="number" step="0.01" value={read(code, month, "gross_wage")} onChange={e => set(code, month, "gross_wage", e.target.value)} /></label>{!noContributions && <label>Odvody zaměstnavatele<input type="number" step="0.01" value={read(code, month, "employer_contributions")} onChange={e => set(code, month, "employer_contributions", e.target.value)} /></label>}<label>Jiné výdaje s odvody<input type="number" step="0.01" value={read(code, month, "other_with_contributions")} onChange={e => set(code, month, "other_with_contributions", e.target.value)} /></label><label>Jiné výdaje bez odvodů<input type="number" step="0.01" value={read(code, month, "other_without_contributions")} onChange={e => set(code, month, "other_without_contributions", e.target.value)} /></label><label>Datum úhrady<input type="date" value={read(code, month, "payment_date")} onChange={e => set(code, month, "payment_date", e.target.value)} /></label></td>; })}</tr>)}</tbody></table></div>
     <button className="sd2-details-toggle secondary" type="button" onClick={() => setXmlDetails(value => !value)}>{xmlDetails ? "Skrýt údaje pro XML" : "Doplnit údaje pro XML"}</button>
     {xmlDetails && <section className="sd2-xml-panel">

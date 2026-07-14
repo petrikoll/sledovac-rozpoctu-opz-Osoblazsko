@@ -4,6 +4,7 @@ import hashlib
 import os
 import re
 import unicodedata
+from collections import defaultdict
 from contextvars import ContextVar
 from datetime import datetime
 from decimal import Decimal
@@ -20,7 +21,7 @@ from google.oauth2 import id_token
 from .calculations import final_settlement, lump_sum_metrics, propose_transfers
 from .models import CofinancingEntry, LumpSumEntry, Project, ProjectCreate, Sd2AttachmentRecord, Sd2MonthlyEntry, TransferCandidate
 from .pdf_parser import extract_budget_code, parse_payment_request
-from .payroll_parser import parse_payroll_slips
+from .payroll_parser import parse_payroll_slips, parse_payslip_insurance
 from .repository import GoogleSheetsRepository, InMemoryRepository
 from .sd2_xml import build_sd2_xml
 from .storage import GoogleDriveStorage, LocalFileStorage
@@ -360,6 +361,69 @@ def normalized_name(value: str) -> str:
     return " ".join(parts)
 
 
+def _mosty_payroll_rows(rows: list[dict], allowed: set[str]) -> list[dict]:
+    """Convert payroll-list components into final SD-2 records for Mosty v rodině."""
+    groups: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
+    for row in rows:
+        person = normalized_name(f'{row.get("first_name", "")} {row.get("last_name", "")}')
+        groups[(person, str(row["month"]), normalized_name(str(row.get("contract_name", ""))))].append(row)
+
+    result: list[dict] = []
+
+    def ignored(group: list[dict]) -> None:
+        for source in group:
+            value = dict(source); value["budget_item_code"] = "__ignore__"; value["match_status"] = "ignored"
+            result.append(value)
+
+    def final_row(source: dict, code: str, gross: Decimal, fund: Decimal, hours: Decimal,
+                  target_wage: Decimal, correction: Decimal = Decimal("0"), note: str = "") -> None:
+        value = dict(source)
+        exact_insurance = source.get("contract_employer_insurance")
+        insurance = ((Decimal(str(exact_insurance)) * target_wage / gross).quantize(Decimal("0.01"))
+                     if exact_insurance is not None and gross else (target_wage * Decimal("0.338")).quantize(Decimal("0.01")))
+        value.update({
+            "source_key": f'{source["source_key"]}-sd2-{code}', "budget_item_code": code if code in allowed else "",
+            "match_status": "matched" if code in allowed else "unmatched", "gross_wage": gross,
+            "contract_gross": gross, "work_time_fund": fund, "project_hours": hours,
+            "component_amount": target_wage, "other_with_contributions": correction,
+            "employer_contributions": insurance,
+            "component_description": note or source.get("component_description", ""),
+        })
+        result.append(value)
+
+    for (person, _, contract), group in groups.items():
+        gross = max((Decimal(str(row.get("contract_gross", 0))) for row in group), default=Decimal("0"))
+        fund = max((Decimal(str(row.get("work_time_fund", 0))) for row in group), default=Decimal("0"))
+        full_fund = max((Decimal(str(row.get("full_time_fund", fund))) for row in group), default=fund)
+        if person == normalized_name("Iva Holcová") and "dpc mosty v rodine" in contract:
+            hours = max((Decimal(str(row.get("worked_hours", 0))) for row in group), default=Decimal("0"))
+            final_row(group[0], "1.1.2.4", gross, hours, hours, gross, note="DPČ Mosty v rodině")
+        elif person == normalized_name("Jana Sedlářová") and "ps mosty v rodine" in contract:
+            final_row(group[0], "1.1.1.1", gross, fund, fund, gross, note="Celý pracovní poměr v projektu")
+        elif person == normalized_name("Silvie Malíková") and contract == "ps":
+            component = next((row for row in group if row.get("component_code") == "M01" and int(row.get("component_occurrence", 0)) == 3), None)
+            if not component or not fund:
+                ignored(group); continue
+            target = Decimal(str(component["component_amount"])); hours = (full_fund * Decimal("0.2")).quantize(Decimal("0.01"))
+            calculated = (gross / fund * hours).quantize(Decimal("0.01"))
+            final_row(component, "1.1.1.3", gross, fund, hours, target, target - calculated,
+                      "Projektový HPP 0,2; korekce dorovnává odlišnou sazbu projektové části")
+        elif person == normalized_name("Martina Pírková") and "ps mosty v rodine" in contract:
+            bonus = sum((Decimal(str(row["component_amount"])) for row in group if row.get("component_code") == "M06"), Decimal("0"))
+            mapping = ((1, "1.1.1.7", Decimal("0.5")), (2, "1.1.1.5", Decimal("0.3")), (3, "1.1.1.4", Decimal("0.2")))
+            for occurrence, code, share in mapping:
+                component = next((row for row in group if row.get("component_code") == "M01" and int(row.get("component_occurrence", 0)) == occurrence), None)
+                if not component:
+                    continue
+                target = Decimal(str(component["component_amount"])) + (bonus * share).quantize(Decimal("0.01"))
+                hours = (full_fund * share).quantize(Decimal("0.01")); calculated = (gross / fund * hours).quantize(Decimal("0.01")) if fund else Decimal("0")
+                final_row(component, code, gross, fund, hours, target, target - calculated,
+                          f'Projektový podíl {int(share * 100)} % včetně podílu osobního ohodnocení')
+        else:
+            ignored(group)
+    return result
+
+
 @app.get("/api/projects/{project_id}/sd2-monthly")
 def sd2_monthly(project_id: str, period: int, user=Depends(current_user)):
     project(project_id, user)
@@ -438,31 +502,71 @@ def create_sd2_xml(project_id: str, period: int, body: dict, user=Depends(curren
 
 
 @app.post("/api/projects/{project_id}/payroll-slips/analyze")
-async def analyze_payroll_slips(project_id: str, period: int, file: UploadFile = File(...), user=Depends(require_editor)):
-    project(project_id, user)
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(415, "Vyberte soubor PDF s výplatními páskami.")
-    data = await file.read(MAX_SIZE + 1)
-    if len(data) > MAX_SIZE:
-        raise HTTPException(413, "Soubor je větší než povolených 20 MB.")
-    try:
-        rows = parse_payroll_slips(data)
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
+async def analyze_payroll_slips(project_id: str, period: int, files: list[UploadFile] = File(...), user=Depends(require_editor)):
+    selected_project = project(project_id, user)
+    rows: list[dict] = []; insurance_rows: list[dict] = []; file_names: list[str] = []
+    for file in files:
+        if not file.filename or not file.filename.lower().endswith(".pdf"):
+            raise HTTPException(415, "Vyberte pouze soubory PDF.")
+        data = await file.read(MAX_SIZE + 1)
+        if len(data) > MAX_SIZE:
+            raise HTTPException(413, "Některý soubor je větší než povolených 20 MB.")
+        file_names.append(file.filename)
+        try:
+            rows.extend(parse_payroll_slips(data))
+        except ValueError:
+            pass
+        insurance_rows.extend(parse_payslip_insurance(data))
+    if not rows:
+        raise HTTPException(422, "Nebyl nalezen podporovaný výplatní list.")
+    insurance_by_key = {(normalized_name(f'{item["first_name"]} {item["last_name"]}'), item["month"], normalized_name(item["contract_name"])): item["employer_insurance"] for item in insurance_rows}
+    for row in rows:
+        key = (normalized_name(f'{row.get("first_name", "")} {row.get("last_name", "")}'), row["month"], normalized_name(str(row.get("contract_name", ""))))
+        if key in insurance_by_key:
+            row["contract_employer_insurance"] = insurance_by_key[key]
     assignments = repo.worker_assignments[project_id]
-    assigned_codes: dict[str, str] = {}
+    assignment_rules: dict[str, list[dict]] = defaultdict(list)
     for assignment in assignments:
-        for name in re.split(r"[,;\n]+", str(assignment.get("employee_names", ""))):
+        stored_name = str(assignment.get("employee_name", "")).strip()
+        names = [stored_name] if stored_name else re.split(r"[,;\n]+", str(assignment.get("employee_names", "")))
+        for name in names:
             if name.strip():
-                assigned_codes[normalized_name(name)] = str(assignment.get("budget_item_code", ""))
-                assigned_codes[normalized_name(" ".join(reversed(name.strip().split())))] = str(assignment.get("budget_item_code", ""))
+                rule = {
+                    "budget_item_code": str(assignment.get("budget_item_code", "")),
+                    "project_fte": assignment.get("project_fte"),
+                    "payroll_component_amount": assignment.get("payroll_component_amount"),
+                    "contract_contains": str(assignment.get("contract_contains", "")).strip(),
+                }
+                assignment_rules[normalized_name(name)].append(rule)
+                reversed_name = normalized_name(" ".join(reversed(name.strip().split())))
+                if reversed_name != normalized_name(name):
+                    assignment_rules[reversed_name].append(rule)
     items = sd2_budget_items(project_id)
     allowed = {item.code for item in items}
+    if normalized_name(selected_project.project_name) == normalized_name("Mosty v rodině"):
+        rows = _mosty_payroll_rows(rows, allowed)
+        return {"period": period, "file_name": ", ".join(file_names), "rows": rows,
+                "budget_items": [{"code": item.code, "name": item.name} for item in items]}
+    resolved_rows = []
     for row in rows:
-        matched = assigned_codes.get(normalized_name(row["full_name"]), "")
+        parsed_name = normalized_name(f'{row.get("first_name", "")} {row.get("last_name", "")}')
+        candidates = assignment_rules.get(parsed_name, assignment_rules.get(normalized_name(row["full_name"]), []))
+        contract_name = normalized_name(str(row.get("contract_name", "")))
+        candidates = [rule for rule in candidates if not rule["contract_contains"] or normalized_name(rule["contract_contains"]) in contract_name]
+        amount = Decimal(str(row.get("component_amount", row.get("gross_wage", 0))))
+        exact = [rule for rule in candidates if str(rule.get("payroll_component_amount") or "").strip() and Decimal(str(rule["payroll_component_amount"])) == amount]
+        without_amount = [rule for rule in candidates if not str(rule.get("payroll_component_amount") or "").strip()]
+        matched_rule = exact[0] if len(exact) == 1 else (without_amount[0] if not exact and len(without_amount) == 1 and len(candidates) == 1 else None)
+        matched = str(matched_rule["budget_item_code"]) if matched_rule else ""
         row["budget_item_code"] = matched if matched in allowed else ""
         row["match_status"] = "matched" if row["budget_item_code"] else "unmatched"
-    return {"period": period, "file_name": file.filename, "rows": rows,
+        if matched_rule and str(matched_rule.get("project_fte") or "").strip():
+            fte = Decimal(str(matched_rule["project_fte"]))
+            row["project_fte"] = fte
+            row["project_hours"] = (Decimal(str(row.get("work_time_fund", 0))) * fte).quantize(Decimal("0.01"))
+        resolved_rows.append(row)
+    rows = resolved_rows
+    return {"period": period, "file_name": ", ".join(file_names), "rows": rows,
             "budget_items": [{"code": item.code, "name": item.name} for item in items]}
 
 
@@ -597,11 +701,24 @@ def save_worker_assignments(project_id: str, body: dict, user=Depends(require_ed
     records = []
     for item in body.get("assignments", []):
         code = str(item.get("budget_item_code", "")).strip()
-        names = str(item.get("employee_names", "")).strip()
-        if code and names:
+        name = str(item.get("employee_name") or item.get("employee_names", "")).strip()
+        fte_raw = item.get("project_fte")
+        amount_raw = item.get("payroll_component_amount")
+        try:
+            fte = Decimal(str(fte_raw)) if str(fte_raw or "").strip() else None
+            amount = Decimal(str(amount_raw)) if str(amount_raw or "").strip() else None
+        except Exception as exc:
+            raise HTTPException(422, "ProjektovĂ˝ Ăşvazek a mzdovĂˇ sloĹľka musĂ­ bĂ˝t ÄŤĂ­sla.") from exc
+        if fte is not None and not Decimal("0") <= fte <= Decimal("1"):
+            raise HTTPException(422, "ProjektovĂ˝ Ăşvazek musĂ­ bĂ˝t od 0 do 1.")
+        if amount is not None and amount < 0:
+            raise HTTPException(422, "MzdovĂˇ sloĹľka nesmĂ­ bĂ˝t zĂˇpornĂˇ.")
+        if code and name:
             records.append({"worker_assignment_id": str(uuid4()), "project_id": project_id,
-                "budget_item_code": code, "employee_names": names,
-                "updated_at": datetime.utcnow().isoformat(), "updated_by": user["email"]})
+                "budget_item_code": code, "employee_names": name,
+                "updated_at": datetime.utcnow().isoformat(), "updated_by": user["email"],
+                "employee_name": name, "project_fte": fte, "payroll_component_amount": amount,
+                "contract_contains": str(item.get("contract_contains", "")).strip()})
     repo.worker_assignments[project_id] = records
     if google_repo:
         google_repo.delete_records("PRACOVNICI_ROZPOCTU", "project_id", project_id)

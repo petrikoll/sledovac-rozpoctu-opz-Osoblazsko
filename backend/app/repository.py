@@ -28,7 +28,8 @@ SHEETS = {
     "SPOLUFINANCOVANI": ["cofinancing_entry_id", "project_id", "entry_date", "amount", "note", "created_at", "created_by"],
     "SD2_MESICE": ["sd2_entry_id", "project_id", "monitoring_period", "month", "budget_item_code", "gross_wage", "employer_contributions", "other_with_contributions", "other_without_contributions", "payment_date", "created_at", "created_by", "external_id", "subject_id", "last_name", "first_name", "employment_type", "work_time_fund", "project_hours", "description"],
     "SD2_PRILOHY": ["attachment_id", "project_id", "monitoring_period", "file_name", "drive_file_id", "uploaded_at", "uploaded_by"],
-    "PRACOVNICI_ROZPOCTU": ["worker_assignment_id", "project_id", "budget_item_code", "employee_names", "updated_at", "updated_by"],
+    # Keep the original six columns first for compatibility with existing Sheets.
+    "PRACOVNICI_ROZPOCTU": ["worker_assignment_id", "project_id", "budget_item_code", "employee_names", "updated_at", "updated_by", "employee_name", "project_fte", "payroll_component_amount", "contract_contains"],
     "NAVRHY_ZMEN": ["proposal_id", "project_id", "source_budget_version_id", "proposal_status", "calculation_mode", "reserve_rate", "total_deficit", "total_transfer", "created_at", "created_by", "note"],
     "NAVRHY_ZMEN_RADKY": ["proposal_line_id", "proposal_id", "source_item_code", "target_item_code", "amount", "reason", "source_available_before", "source_available_after", "target_balance_before", "target_balance_after"],
     "IMPORT_LOG": ["import_id", "project_id", "import_type", "source_file_name", "source_sha256", "status", "error_code", "message", "created_at", "created_by"],
