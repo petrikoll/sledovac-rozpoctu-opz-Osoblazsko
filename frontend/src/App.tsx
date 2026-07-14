@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
-import { api, czk, downloadApi, pct } from "./api";
+import { api, AUTH_EXPIRED_EVENT, czk, downloadApi, pct } from "./api";
 type Project = {
   project_id: string;
   project_code: string;
@@ -146,11 +146,68 @@ function tokenEmail(token: string) {
     return "";
   }
 }
+
+function tokenExpiresAt(token: string) {
+  try {
+    const payload = JSON.parse(
+      atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")),
+    );
+    return typeof payload.exp === "number" ? payload.exp * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
+function validStoredToken() {
+  const token = localStorage.getItem("opz_google_token");
+  const expiresAt = token ? tokenExpiresAt(token) : null;
+  if (token && expiresAt !== null && expiresAt <= Date.now()) {
+    localStorage.removeItem("opz_google_token");
+    sessionStorage.setItem("opz_auth_expired", "1");
+    return null;
+  }
+  return token;
+}
+
 function AuthGate({ children }: { children: React.ReactNode }) {
-  const [token, setToken] = useState(() =>
-    localStorage.getItem("opz_google_token"),
+  const [token, setToken] = useState(validStoredToken);
+  const [expired, setExpired] = useState(
+    () => sessionStorage.getItem("opz_auth_expired") === "1",
   );
   const button = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const authenticationExpired = () => {
+      setExpired(true);
+      setToken(null);
+    };
+    const storageChanged = (event: StorageEvent) => {
+      if (event.key === "opz_google_token") setToken(validStoredToken());
+    };
+    window.addEventListener(AUTH_EXPIRED_EVENT, authenticationExpired);
+    window.addEventListener("storage", storageChanged);
+    return () => {
+      window.removeEventListener(AUTH_EXPIRED_EVENT, authenticationExpired);
+      window.removeEventListener("storage", storageChanged);
+    };
+  }, []);
+  useEffect(() => {
+    if (!token) return;
+    const expiresAt = tokenExpiresAt(token);
+    if (expiresAt === null) return;
+    const remaining = expiresAt - Date.now();
+    if (remaining <= 0) {
+      localStorage.removeItem("opz_google_token");
+      sessionStorage.setItem("opz_auth_expired", "1");
+      window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      localStorage.removeItem("opz_google_token");
+      sessionStorage.setItem("opz_auth_expired", "1");
+      window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+    }, remaining);
+    return () => window.clearTimeout(timer);
+  }, [token]);
   useEffect(() => {
     if (token) return;
     let tries = 0;
@@ -162,6 +219,8 @@ function AuthGate({ children }: { children: React.ReactNode }) {
           client_id: CLIENT_ID,
           callback: (response: { credential: string }) => {
             localStorage.setItem("opz_google_token", response.credential);
+            sessionStorage.removeItem("opz_auth_expired");
+            setExpired(false);
             setToken(response.credential);
           },
         });
@@ -185,6 +244,11 @@ function AuthGate({ children }: { children: React.ReactNode }) {
             Přihlaste se povoleným Google účtem. Aplikace nezískává přístup k
             vaší e-mailové schránce.
           </p>
+          {expired && (
+            <p className="auth-expired-notice">
+              Platnost přihlášení skončila. Pro pokračování se prosím znovu přihlaste.
+            </p>
+          )}
           <div ref={button} />
         </section>
       </main>

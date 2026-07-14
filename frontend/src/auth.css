@@ -1,0 +1,8 @@
+.login .auth-expired-notice {
+  margin: -10px 0 20px;
+  padding: 12px;
+  border: 1px solid #e8c775;
+  border-radius: 8px;
+  background: #fff3d6;
+  color: #76520c;
+}
