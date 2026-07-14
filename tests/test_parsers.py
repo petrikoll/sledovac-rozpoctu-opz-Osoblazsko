@@ -7,7 +7,7 @@ import openpyxl
 
 from app.pdf_parser import extract_budget_code, money, parse_payment_request
 from app.models import Transfer
-from app.xlsx_parser import export_transfer_proposal, export_with_formulas, fallback_rows, parse_budget, validate_budget_structure
+from app.xlsx_parser import export_budget_status, export_transfer_proposal, export_with_formulas, fallback_rows, parse_budget, validate_budget_structure
 
 SAMPLES = Path(__file__).parents[1] / "samples"
 
@@ -59,6 +59,24 @@ def test_fallback_and_formula_export():
     rows = {wb["Export"].cell(r, 1).value: r for r in range(2, wb["Export"].max_row + 1)}
     assert wb["Export"].cell(rows["1.1.1"], 6).value.startswith("=")
     assert wb["Export"].cell(rows["1.2"], 6).value == f"=F{rows['1.1']}*I{rows['1.2']}/100"
+
+
+def test_budget_status_export_adds_only_filled_months():
+    rows = [{
+        "code": "1.1.1.1", "name": "Psycholog", "level": 4, "is_leaf": True,
+        "total_amount": Decimal("100000"), "cumulative_spent": Decimal("30000"),
+        "remaining": Decimal("70000"), "spent_percent": Decimal("30"),
+    }]
+    data = export_budget_status(rows, {"1.1.1.1": {
+        "2026-05-01": Decimal("12000"), "2026-06-01": Decimal("18000"), "2026-07-01": Decimal("0"),
+    }})
+
+    wb = openpyxl.load_workbook(BytesIO(data), data_only=True)
+    ws = wb["Čerpání rozpočtu"]
+    assert [cell.value for cell in ws[1]] == ["Kód", "Položka", "Rozpočet", "květen 2026", "červen 2026", "Kumulativně", "Zůstatek", "Čerpání"]
+    assert ws.cell(2, 4).value == 12000
+    assert ws.cell(2, 5).value == 18000
+    assert ws.cell(2, 6).value == 30000
 
 
 def test_transfer_proposal_export_contains_audit_columns():

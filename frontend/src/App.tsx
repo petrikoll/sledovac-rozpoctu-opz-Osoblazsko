@@ -1190,7 +1190,7 @@ function BudgetOverview({
     queryFn: () => api<CurrentUser>("/me"),
   });
   const qc = useQueryClient();
-  const [deleteError, setDeleteError] = useState("");
+  const [deleteError, setDeleteError] = useState(""); const [exportingBudget, setExportingBudget] = useState(false);
   const [sd2Period, setSd2Period] = useState<number | null>(null); const [workerSettingsOpen, setWorkerSettingsOpen] = useState(false);
   const [selectedVersion, setSelectedVersion] = useState(activeVersionId ?? "");
   useEffect(() => {
@@ -1234,6 +1234,14 @@ function BudgetOverview({
       setDeleteError(error instanceof Error ? error.message : "Rozpočet se nepodařilo smazat.");
     }
   }
+  async function downloadBudgetXlsx() {
+    setDeleteError(""); setExportingBudget(true);
+    try {
+      await downloadApi(`/projects/${id}/budget-status.xlsx${selectedVersion ? `?version_id=${encodeURIComponent(selectedVersion)}` : ""}`, "Cerpani_rozpoctu_mesicne.xlsx");
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : "Přehled čerpání se nepodařilo stáhnout.");
+    } finally { setExportingBudget(false); }
+  }
   return (
     <section className="panel wide budget-overview">
       <div className="budget-overview-head">
@@ -1248,6 +1256,7 @@ function BudgetOverview({
               {versions.data?.map((version, index) => <option key={version.version_id} value={version.version_id}>{version.version_id === effectiveActive ? `Aktuální verze ${index + 1}` : index === 0 ? "Původní rozpočet" : `Verze ${index + 1}`}</option>)}
             </select>
           </label>
+          <button className="secondary" type="button" onClick={downloadBudgetXlsx} disabled={exportingBudget}>{exportingBudget ? "Připravuji XLSX…" : "Stáhnout čerpání XLSX"}</button>
           {me.data?.role === "admin" && (
             <>
               <ImportBudget id={id} compact />

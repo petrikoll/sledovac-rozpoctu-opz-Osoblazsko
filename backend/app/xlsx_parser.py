@@ -10,7 +10,7 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 import openpyxl
-from openpyxl.styles import Font, PatternFill
+from openpyxl.styles import Alignment, Font, PatternFill
 
 from .models import BudgetAnalysis, BudgetItem, Transfer
 
@@ -215,6 +215,55 @@ def export_with_formulas(analysis: BudgetAnalysis) -> bytes:
     ws.column_dimensions["B"].width = 55
     for cell in ws["F"][1:]:
         cell.number_format = '#,##0.00 "Kč"'
+    output = BytesIO()
+    wb.save(output)
+    return output.getvalue()
+
+
+def export_budget_status(rows: list[dict], monthly: dict[str, dict[str, Decimal]]) -> bytes:
+    """Export the budget overview and add only months that contain saved financial data."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Čerpání rozpočtu"
+    months = sorted({month for values in monthly.values() for month, amount in values.items() if amount})
+    month_labels = []
+    month_names = ("leden", "únor", "březen", "duben", "květen", "červen",
+                   "červenec", "srpen", "září", "říjen", "listopad", "prosinec")
+    for month in months:
+        year, month_number, _ = (int(value) for value in month.split("-"))
+        month_labels.append(f"{month_names[month_number - 1]} {year}")
+    headers = ["Kód", "Položka", "Rozpočet", *month_labels, "Kumulativně", "Zůstatek", "Čerpání"]
+    ws.append(headers)
+    for cell in ws[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="1F4E3D")
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    for row in rows:
+        values = monthly.get(str(row["code"]), {})
+        ws.append([row["code"], row["name"], row["total_amount"],
+                   *[values.get(month) for month in months], row["cumulative_spent"],
+                   row["remaining"], row["spent_percent"] / Decimal("100")])
+        excel_row = ws.max_row
+        ws.cell(excel_row, 2).alignment = Alignment(indent=max(0, int(row.get("level", 0)) - 1))
+        if not row.get("is_leaf", False):
+            for cell in ws[excel_row]:
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill("solid", fgColor="EAF2ED")
+        if Decimal(str(row["remaining"])) < 0:
+            ws.cell(excel_row, len(headers) - 1).fill = PatternFill("solid", fgColor="F8D7DA")
+    money_columns = list(range(3, 4 + len(months) + 2))
+    for column in money_columns:
+        for cell in ws.iter_cols(min_col=column, max_col=column, min_row=2):
+            cell[0].number_format = '#,##0.00 "Kč"'
+    for cell in ws.iter_cols(min_col=len(headers), max_col=len(headers), min_row=2):
+        cell[0].number_format = "0.0%"
+    ws.freeze_panes = "C2"
+    ws.auto_filter.ref = ws.dimensions
+    ws.column_dimensions["A"].width = 18
+    ws.column_dimensions["B"].width = 52
+    for column in range(3, len(headers) + 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(column)].width = 17
+    ws.sheet_view.showGridLines = False
     output = BytesIO()
     wb.save(output)
     return output.getvalue()

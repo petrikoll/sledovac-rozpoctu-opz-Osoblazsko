@@ -25,7 +25,7 @@ from .payroll_parser import parse_payroll_slips, parse_payslip_insurance
 from .repository import GoogleSheetsRepository, InMemoryRepository
 from .sd2_xml import build_sd2_xml
 from .storage import GoogleDriveStorage, LocalFileStorage
-from .xlsx_parser import export_transfer_proposal, export_with_formulas, parse_budget, validate_budget_structure
+from .xlsx_parser import export_budget_status, export_transfer_proposal, export_with_formulas, parse_budget, validate_budget_structure
 
 app = FastAPI(title="Sledovač čerpání rozpočtu OPZ+", version="1.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173").split(","), allow_methods=["*"], allow_headers=["*"])
@@ -709,6 +709,32 @@ def budget_status(project_id: str, version_id: str | None = None, user=Depends(c
         "remaining": item.total_amount-spent[item.code], "spent_percent": spent[item.code]/item.total_amount*100 if item.total_amount else 0,
         "expected_final_remaining": item.total_amount-spent[item.code]-item.planned_future_spending, "periods": periods[item.code]}
         for item in items]
+
+
+@app.get("/api/projects/{project_id}/budget-status.xlsx")
+def download_budget_status(project_id: str, version_id: str | None = None, user=Depends(current_user)):
+    p = project(project_id, user)
+    selected_version = version_id or p.active_budget_version_id
+    version = next((value for value in repo.budgets[project_id] if value["version_id"] == selected_version), None)
+    if not version:
+        raise HTTPException(404, "Verze rozpočtu nebyla nalezena.")
+    items = version["analysis"].items
+    by_code = {item.code: item for item in items}
+    monthly: dict[str, dict[str, Decimal]] = {code: {} for code in by_code}
+    for entry in repo.sd2_entries[project_id]:
+        if entry.budget_item_code not in monthly or not entry.total_amount:
+            continue
+        month = entry.month.isoformat()
+        monthly[entry.budget_item_code][month] = monthly[entry.budget_item_code].get(month, Decimal("0")) + entry.total_amount
+    for item in sorted(items, key=lambda value: value.level, reverse=True):
+        if item.parent_code not in monthly:
+            continue
+        for month, amount in monthly[item.code].items():
+            monthly[item.parent_code][month] = monthly[item.parent_code].get(month, Decimal("0")) + amount
+    rows = budget_status(project_id, selected_version, user)
+    content = export_budget_status(rows, monthly)
+    headers = {"Content-Disposition": 'attachment; filename="Cerpani_rozpoctu_mesicne.xlsx"'}
+    return StreamingResponse(BytesIO(content), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers=headers)
 
 
 @app.get("/api/projects/{project_id}/worker-assignments")
