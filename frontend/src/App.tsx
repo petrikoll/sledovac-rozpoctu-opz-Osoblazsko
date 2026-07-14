@@ -29,6 +29,7 @@ type Payment = {
   approved_total: number;
   public_payment: number;
   financial_plan_coverage_actual?: number | null;
+  financial_plan_provider_payment?: number | null;
   financial_plan_settlement_actual?: number | null;
   financial_plan_state?: string | null;
   financial_plan_source_file_name?: string | null;
@@ -651,8 +652,10 @@ function PaymentRequests({ id }: { id: string }) {
             <dt>Částka na krytí výdajů / zálohová platba</dt>
             <dd>{czk.format(preview.public_payment)}</dd>
             {preview.financial_plan_attached && <>
-              <dt>Skutečně vyplaceno dle Finančního plánu</dt>
+              <dt>Základ financování dle Finančního plánu (včetně vlastního podílu)</dt>
               <dd>{czk.format(preview.financial_plan_coverage_actual)}</dd>
+              <dt>Skutečně vyplaceno poskytovatelem</dt>
+              <dd>{czk.format(preview.financial_plan_provider_payment)}</dd>
               <dt>Vyúčtování dle Finančního plánu</dt>
               <dd>{czk.format(preview.financial_plan_settlement_actual)}</dd>
             </>}
@@ -708,7 +711,8 @@ function PaymentRequests({ id }: { id: string }) {
                   </span>
                 )}
                 {x.financial_plan_coverage_actual != null && (
-                  <span><small>SKUTEČNĚ VYPLACENO DLE IS KP21+</small><strong>{czk.format(x.financial_plan_coverage_actual)}</strong></span>
+                  <><span><small>ZÁKLAD DLE FINANČNÍHO PLÁNU</small><strong>{czk.format(x.financial_plan_coverage_actual)}</strong></span>
+                  <span><small>SKUTEČNĚ VYPLACENO POSKYTOVATELEM</small><strong>{czk.format(x.financial_plan_provider_payment || 0)}</strong></span></>
                 )}
               </div>
             </article>;

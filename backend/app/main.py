@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from google.auth.transport import requests
 from google.oauth2 import id_token
 
-from .calculations import final_settlement, lump_sum_metrics, propose_transfers
+from .calculations import final_settlement, lump_sum_metrics, propose_transfers, q
 from .models import CofinancingEntry, LumpSumEntry, Project, ProjectCreate, ProjectSchedule, Sd2AttachmentRecord, Sd2MonthlyEntry, TransferCandidate
 from .pdf_parser import extract_budget_code, parse_payment_request
 from .payroll_parser import parse_payroll_slips, parse_payslip_insurance
@@ -326,7 +326,11 @@ async def analyze_payment(project_id: str, file: UploadFile = File(...), financi
             setattr(result, key, value)
     token = str(uuid4())
     analyses[token] = {"kind": "payment", "project_id": project_id, "result": result, "financial_plan": plan}
-    return {"token": token, "financial_plan_required": result.is_final_payment, "financial_plan_attached": plan is not None, **result.model_dump()}
+    provider_payment = (q(result.financial_plan_coverage_actual * p.public_funding_rate)
+                        if result.financial_plan_coverage_actual is not None else None)
+    return {"token": token, "financial_plan_required": result.is_final_payment,
+            "financial_plan_attached": plan is not None,
+            "financial_plan_provider_payment": provider_payment, **result.model_dump()}
 
 
 @app.post("/api/projects/{project_id}/payment-requests/import")
@@ -363,7 +367,13 @@ async def import_financial_plan(project_id: str, file: UploadFile = File(...), u
 
 
 @app.get("/api/projects/{project_id}/payment-requests")
-def payments(project_id: str, user=Depends(current_user)): return repo.payments[project_id]
+def payments(project_id: str, user=Depends(current_user)):
+    p = project(project_id, user)
+    return [{**item.model_dump(),
+             "financial_plan_provider_payment": (
+                 q(item.financial_plan_coverage_actual * p.public_funding_rate)
+                 if item.financial_plan_coverage_actual is not None else None)}
+            for item in repo.payments[project_id]]
 
 
 @app.get("/api/projects/{project_id}/payment-requests/{request_id}")
@@ -1012,7 +1022,7 @@ def _settlement_breakdown(project_id: str, user: dict) -> dict:
         recognized_lump = payment.approved_lump_sum if approved and not payment.is_advance_payment else Decimal("0")
         recognized_total = recognized_direct + recognized_lump
         projected_row_total = recognized_total if approved else (declared_total if not payment.is_advance_payment else Decimal("0"))
-        received_payment = (payment.financial_plan_coverage_actual
+        received_payment = (q(payment.financial_plan_coverage_actual * p.public_funding_rate)
                             if payment.financial_plan_coverage_actual is not None
                             else (payment.public_payment if paid else Decimal("0")))
 

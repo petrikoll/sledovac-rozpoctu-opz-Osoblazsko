@@ -72,6 +72,23 @@ def test_final_settlement_prefers_actual_coverage_from_financial_plan():
     assert Decimal(str(data["rows"][0]["pdf_public_payment"])) == Decimal("1100")
 
 
+def test_financial_plan_coverage_deducts_recipient_cofinancing():
+    project = client.post("/api/projects", json={
+        "project_code": "CZ.COFIN", "project_name": "Spolufinancování", "recipient_name": "Příjemce",
+        "public_funding_rate": "0.95",
+    }).json()
+    payment = _payment(1, state="Proplacená", processing_state="Proplacená příjemci/Vypořádaná",
+                       advance=True, public_payment=Decimal("1258286.40"))
+    payment.financial_plan_coverage_actual = Decimal("1324512.00")
+    repo.payments[project["project_id"]] = [payment]
+
+    data = client.get(f"/api/projects/{project['project_id']}/final-settlement").json()
+    listed = client.get(f"/api/projects/{project['project_id']}/payment-requests").json()
+
+    assert Decimal(str(data["net_received"])) == Decimal("1258286.40")
+    assert Decimal(str(listed[0]["financial_plan_provider_payment"])) == Decimal("1258286.40")
+
+
 def test_mosty_malikova_bonus_is_offered_but_excluded_by_default():
     from app.main import _mosty_payroll_rows
 

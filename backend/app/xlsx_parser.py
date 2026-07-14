@@ -361,7 +361,8 @@ def export_final_settlement(project: dict, breakdown: dict) -> bytes:
         "Prokazováno celkem", "Schválené přímé", "Schválený paušál", "Schváleno celkem",
         "Čisté jiné peněžní příjmy", "Částka na krytí výdajů / zálohová platba", "Započteno jako schválené",
         "Započteno v orientačním scénáři", "Vysvětlení", "Částka uvedená v PDF",
-        "Skutečně vyplaceno dle Finančního plánu", "Vyúčtování dle Finančního plánu", "Zdroj Finančního plánu",
+        "Základ financování dle Finančního plánu (včetně vlastního podílu)",
+        "Vyúčtování dle Finančního plánu", "Zdroj Finančního plánu",
     ]
     detail.append(headers)
     for cell in detail[1]:
