@@ -25,7 +25,7 @@ from .payroll_parser import parse_payroll_slips, parse_payslip_insurance
 from .repository import GoogleSheetsRepository, InMemoryRepository
 from .sd2_xml import build_sd2_xml
 from .storage import GoogleDriveStorage, LocalFileStorage
-from .xlsx_parser import export_budget_status, export_transfer_proposal, export_with_formulas, parse_budget, validate_budget_structure
+from .xlsx_parser import export_budget_status, export_final_settlement, export_transfer_proposal, export_with_formulas, parse_budget, parse_financial_plan, validate_budget_structure
 
 app = FastAPI(title="Sledovač čerpání rozpočtu OPZ+", version="1.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173").split(","), allow_methods=["*"], allow_headers=["*"])
@@ -278,13 +278,55 @@ def download_budget(project_id: str, version_id: str, user=Depends(current_user)
     return StreamingResponse(BytesIO(export_with_formulas(analysis)), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": 'attachment; filename="Rozpocet_se_vzorci.xlsx"'})
 
 
+def _financial_plan_changes(plan: dict, sequence_number: int) -> dict | None:
+    row = next((item for item in plan["rows"] if item["sequence_number"] == sequence_number), None)
+    if not row:
+        return None
+    return {
+        "financial_plan_coverage_actual": row["coverage_actual"],
+        "financial_plan_settlement_actual": row["settlement_actual"],
+        "financial_plan_state": row["state"],
+        "financial_plan_source_file_name": plan["file_name"],
+        "financial_plan_source_sha256": plan["sha256"],
+    }
+
+
+def _apply_financial_plan(project_id: str, plan: dict) -> int:
+    applied = 0
+    for payment_item in repo.payments[project_id]:
+        changes = _financial_plan_changes(plan, payment_item.sequence_number)
+        if not changes:
+            continue
+        for key, value in changes.items():
+            setattr(payment_item, key, value)
+        if google_repo:
+            google_repo.update_record("ZADOSTI_O_PLATBU", "payment_request_id", payment_item.payment_request_id, changes)
+        applied += 1
+    return applied
+
+
 @app.post("/api/projects/{project_id}/payment-requests/analyze")
-async def analyze_payment(project_id: str, file: UploadFile = File(...), user=Depends(require_editor)):
+async def analyze_payment(project_id: str, file: UploadFile = File(...), financial_plan: UploadFile | None = File(None), user=Depends(require_editor)):
     p = project(project_id); data = await checked_file(file, ".pdf", {"application/pdf", "application/octet-stream"})
     try: result = parse_payment_request(data, file.filename)
     except Exception as exc: raise HTTPException(422, str(exc))
     if p.project_code != result.project_code: raise HTTPException(422, "Žádost o platbu patří k jinému projektu.")
-    token = str(uuid4()); analyses[token] = {"kind": "payment", "project_id": project_id, "result": result}; return {"token": token, **result.model_dump()}
+    plan = None
+    if financial_plan and financial_plan.filename:
+        plan_data = await checked_file(financial_plan, ".xlsx", {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/octet-stream"})
+        try: plan = parse_financial_plan(plan_data, financial_plan.filename)
+        except Exception as exc: raise HTTPException(422, str(exc))
+        changes = _financial_plan_changes(plan, result.sequence_number)
+        if not changes:
+            raise HTTPException(422, f"Ve Finančním plánu chybí řádek pro ŽoP č. {result.sequence_number}.")
+        plan_row = next(item for item in plan["rows"] if item["sequence_number"] == result.sequence_number)
+        if bool(plan_row["is_final_payment"]) != bool(result.is_final_payment):
+            raise HTTPException(422, "PDF ŽoP a Finanční plán se neshodují v označení závěrečné platby.")
+        for key, value in changes.items():
+            setattr(result, key, value)
+    token = str(uuid4())
+    analyses[token] = {"kind": "payment", "project_id": project_id, "result": result, "financial_plan": plan}
+    return {"token": token, "financial_plan_required": result.is_final_payment, "financial_plan_attached": plan is not None, **result.model_dump()}
 
 
 @app.post("/api/projects/{project_id}/payment-requests/import")
@@ -292,8 +334,12 @@ def import_payment(project_id: str, body: dict, user=Depends(require_editor)):
     cached = analyses.pop(body.get("token"), None)
     if not cached or cached["kind"] != "payment" or cached["project_id"] != project_id: raise HTTPException(410, "Analýza vypršela nebo neexistuje.")
     result = cached["result"]; existing = repo.payments[project_id]
+    if result.is_final_payment and not cached.get("financial_plan"):
+        raise HTTPException(422, "K závěrečné ŽoP je povinný také export XLSX z Finančního plánu v IS KP21+.")
     if any(x.source_sha256 == result.source_sha256 for x in existing): raise HTTPException(409, "Stejný PDF soubor již byl importován.")
     if any(x.request_number == result.request_number and x.request_version == result.request_version for x in existing): raise HTTPException(409, "Stejná verze ŽoP již byla importována.")
+    if cached.get("financial_plan"):
+        _apply_financial_plan(project_id, cached["financial_plan"])
     existing.append(result)
     if google_repo:
         values = result.model_dump(exclude={"lines"}); values.update(project_id=project_id, monitoring_period=max(1, result.sequence_number-1),
@@ -302,6 +348,18 @@ def import_payment(project_id: str, body: dict, user=Depends(require_editor)):
         google_repo.append_records("RADKY_ZOP", [{**line.model_dump(), "payment_line_id": str(uuid4()),
             "payment_request_id": result.payment_request_id, "project_id": project_id} for line in result.lines])
     return result
+
+
+@app.post("/api/projects/{project_id}/payment-requests/financial-plan")
+async def import_financial_plan(project_id: str, file: UploadFile = File(...), user=Depends(require_editor)):
+    project(project_id, user)
+    data = await checked_file(file, ".xlsx", {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/octet-stream"})
+    try: plan = parse_financial_plan(data, file.filename)
+    except Exception as exc: raise HTTPException(422, str(exc))
+    applied = _apply_financial_plan(project_id, plan)
+    if not applied:
+        raise HTTPException(422, "Finanční plán neobsahuje žádné pořadové číslo již importované ŽoP.")
+    return {"source_file_name": plan["file_name"], "updated_payment_requests": applied, "rows": plan["rows"]}
 
 
 @app.get("/api/projects/{project_id}/payment-requests")
@@ -922,12 +980,114 @@ def download_proposal(project_id: str, proposal_id: str, user=Depends(require_ed
         headers={"Content-Disposition": 'attachment; filename="Navrh_zmeny_rozpoctu.xlsx"'})
 
 
+def _normalized_status(value: str) -> str:
+    return "".join(char for char in unicodedata.normalize("NFKD", value or "") if not unicodedata.combining(char)).lower()
+
+
+def _payment_is_approved(payment) -> bool:
+    status = _normalized_status(f"{payment.state} {payment.processing_state}")
+    return any(marker in status for marker in ("proplacena", "vyporadana", "schvalena"))
+
+
+def _payment_is_paid(payment) -> bool:
+    status = _normalized_status(f"{payment.state} {payment.processing_state}")
+    return any(marker in status for marker in ("proplacena", "vyporadana"))
+
+
+def _settlement_breakdown(project_id: str, user: dict) -> dict:
+    p = project(project_id, user)
+    rows = []
+    approved_direct = approved_lump = approved_income = Decimal("0")
+    projected_direct = projected_lump = projected_income = Decimal("0")
+    received = initial_advance = Decimal("0")
+    final_requests = []
+
+    for payment in sorted(repo.payments[project_id], key=lambda item: item.sequence_number):
+        approved = _payment_is_approved(payment)
+        paid = _payment_is_paid(payment)
+        declared_direct = payment.declared_direct_costs
+        declared_lump = payment.declared_lump_sum
+        declared_total = declared_direct + declared_lump
+        recognized_direct = payment.approved_direct_costs if approved and not payment.is_advance_payment else Decimal("0")
+        recognized_lump = payment.approved_lump_sum if approved and not payment.is_advance_payment else Decimal("0")
+        recognized_total = recognized_direct + recognized_lump
+        projected_row_total = recognized_total if approved else (declared_total if not payment.is_advance_payment else Decimal("0"))
+        received_payment = (payment.financial_plan_coverage_actual
+                            if payment.financial_plan_coverage_actual is not None
+                            else (payment.public_payment if paid else Decimal("0")))
+
+        approved_direct += recognized_direct
+        approved_lump += recognized_lump
+        if approved and not payment.is_advance_payment:
+            approved_income += payment.clean_other_income
+        projected_direct += recognized_direct if approved else (declared_direct if not payment.is_advance_payment else Decimal("0"))
+        projected_lump += recognized_lump if approved else (declared_lump if not payment.is_advance_payment else Decimal("0"))
+        if not payment.is_advance_payment:
+            projected_income += payment.clean_other_income
+        received += received_payment
+        if payment.is_advance_payment:
+            initial_advance += received_payment
+        if payment.is_final_payment:
+            final_requests.append(payment)
+
+        if payment.is_advance_payment:
+            explanation = "Úvodní záloha se nezapočítává do čerpání rozpočtu, ale započítává se mezi přijaté platby."
+            payment_type = "Úvodní záloha"
+        elif approved:
+            explanation = "Schválené výdaje se započítávají do čerpání; částka na krytí výdajů se započítává mezi přijaté platby."
+            payment_type = "Závěrečná ŽoP" if payment.is_final_payment else "Vyúčtování"
+        else:
+            explanation = "ŽoP dosud není schválena. Prokazované výdaje jsou použity pouze v orientačním scénáři."
+            payment_type = "Závěrečná ŽoP" if payment.is_final_payment else "Neschválená ŽoP"
+        rows.append({
+            "sequence_number": payment.sequence_number, "status": payment.processing_state or payment.state,
+            "type": payment_type, "source_file_name": payment.source_file_name,
+            "is_advance_payment": payment.is_advance_payment, "is_final_payment": payment.is_final_payment,
+            "is_approved": approved, "is_paid": paid,
+            "declared_direct": declared_direct, "declared_lump_sum": declared_lump,
+            "declared_total": declared_total, "approved_direct": recognized_direct,
+            "approved_lump_sum": recognized_lump, "approved_total": recognized_total,
+            "clean_other_income": payment.clean_other_income,
+            "pdf_public_payment": payment.public_payment,
+            "financial_plan_coverage_actual": payment.financial_plan_coverage_actual,
+            "financial_plan_settlement_actual": payment.financial_plan_settlement_actual,
+            "financial_plan_source_file_name": payment.financial_plan_source_file_name,
+            "received_payment": received_payment, "approved_for_settlement": recognized_total,
+            "projected_for_settlement": projected_row_total, "explanation": explanation,
+        })
+
+    approved_result = final_settlement(approved_direct, approved_lump, Decimal("0"), approved_income,
+                                       p.public_funding_rate, received, Decimal("0"))
+    projected_result = final_settlement(projected_direct, projected_lump, Decimal("0"), projected_income,
+                                        p.public_funding_rate, received, Decimal("0"))
+    return {
+        **projected_result,
+        "approved_eligible_total": approved_result["eligible_total"],
+        "approved_provider_entitlement": approved_result["provider_entitlement"],
+        "current_settlement": approved_result["settlement"],
+        "submitted_pending_total": projected_result["eligible_total"] - approved_result["eligible_total"],
+        "initial_advance": initial_advance, "net_received": received, "rows": rows,
+        "orientacni": not final_requests or any(not _payment_is_approved(item) for item in final_requests),
+        "has_final_payment": bool(final_requests),
+        "final_payment_approved": bool(final_requests) and all(_payment_is_approved(item) for item in final_requests),
+    }
+
+
 @app.get("/api/projects/{project_id}/final-settlement")
 def settlement(project_id: str, user=Depends(current_user)):
-    p = project(project_id); values = [x for x in repo.payments[project_id] if not x.is_advance_payment]
-    direct = sum((x.approved_direct_costs for x in values), Decimal("0")); ls = sum((x.approved_lump_sum for x in values), Decimal("0")); income = sum((x.clean_other_income for x in values), Decimal("0")); received = sum((x.public_payment for x in repo.payments[project_id]), Decimal("0"))
-    return {**final_settlement(direct, ls, Decimal("0"), income, p.public_funding_rate, received, Decimal("0")), "orientacni": True,
-        "has_final_payment": any(x.is_final_payment for x in values)}
+    return _settlement_breakdown(project_id, user)
+
+
+@app.get("/api/projects/{project_id}/final-settlement.xlsx")
+def download_final_settlement(project_id: str, user=Depends(current_user)):
+    p = project(project_id, user)
+    breakdown = _settlement_breakdown(project_id, user)
+    content = export_final_settlement({
+        "project_name": p.project_name, "project_code": p.project_code,
+        "total_budget": p.total_budget, "public_funding_rate": p.public_funding_rate,
+    }, breakdown)
+    return StreamingResponse(BytesIO(content), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="Vypocet_zaverecneho_vyporadani.xlsx"'})
 
 
 @app.get("/api/import-log")

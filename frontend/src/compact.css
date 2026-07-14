@@ -148,6 +148,8 @@ main > section.panel:has(input[aria-label="PDF žádosti o platbu"]) > p { grid-
 main > section.panel:has(input[aria-label="PDF žádosti o platbu"]) > input[aria-label="PDF žádosti o platbu"] { grid-column: 2; grid-row: 1 / span 2; align-self: center; }
 main > section.panel:has(input[aria-label="PDF žádosti o platbu"]) > .preview,
 main > section.panel:has(input[aria-label="PDF žádosti o platbu"]) > .alert,
+main > section.panel:has(input[aria-label="PDF žádosti o platbu"]) > .info,
+main > section.panel:has(input[aria-label="PDF žádosti o platbu"]) > .payment-import-files,
 main > section.panel:has(input[aria-label="PDF žádosti o platbu"]) > .payment-list { grid-column: 1 / -1; }
 main > section.panel:has(input[aria-label="PDF žádosti o platbu"]) > .payment-list { margin-top: 4px; padding-top: 0; border-top: 0; }
 main > section.panel:has(input[aria-label="PDF žádosti o platbu"]) > .payment-list > h3 { display: none; }
@@ -156,7 +158,15 @@ main > section.panel:has(input[aria-label="PDF žádosti o platbu"]) .payment-li
 main > section.panel:has(input[aria-label="PDF žádosti o platbu"]) .payment-list article small { white-space: nowrap; }
 @media (max-width: 620px) { main > section.panel:has(input[aria-label="PDF žádosti o platbu"]) { display: block; } main > section.panel:has(input[aria-label="PDF žádosti o platbu"]) > input[aria-label="PDF žádosti o platbu"] { margin: 8px 0; } }
 .payment-list { margin-top: 16px; padding-top: 10px; }
+.payment-import-files { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(280px, 1.25fr) auto; gap: 12px; align-items: end; }
+.payment-import-files label, .financial-plan-refresh { margin: 0; }
+.payment-import-files small { letter-spacing: 0; font-weight: 500; }
+.financial-plan-refresh { max-width: 520px; margin-bottom: 10px; padding: 10px 12px; background: #f2f6f3; border-radius: 8px; }
 .payment-list article { padding: 9px 0; }
+.payment-list article .payment-values { display: flex; flex-direction: row; align-items: center; gap: 24px; text-align: right; }
+.payment-values span { display: flex; flex-direction: column; gap: 2px; }
+.payment-values small { font-size: 9px; letter-spacing: .06em; }
+.payment-values strong { white-space: nowrap; }
 .settlement { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin: 12px 0; padding: 18px 22px; border-radius: 10px; border: 1px solid; }
 .settlement.refund { background: #f2dddd; border-color: #d9aaaa; }
 .settlement.supplement { background: #dbeadf; border-color: #a9cbb2; }
@@ -165,6 +175,18 @@ main > section.panel:has(input[aria-label="PDF žádosti o platbu"]) .payment-li
 .settlement p { margin-bottom: 0; }
 .settlement dl { display: grid; grid-template-columns: 1fr auto; gap: 7px 18px; margin: 0; align-content: center; }
 .settlement dd { margin: 0; font-weight: 750; text-align: right; }
+.settlement-actions, .settlement-details { grid-column: 1 / -1; }
+.settlement-actions { display: flex; align-items: center; gap: 12px; margin-top: -8px; }
+.settlement-actions .alert { margin: 0; padding: 9px 12px; }
+.settlement-details { border-top: 1px solid #315a4833; padding-top: 12px; }
+.settlement-details summary { cursor: pointer; font-weight: 750; color: #315a48; }
+.settlement-table-wrap { overflow-x: auto; margin-top: 12px; border-radius: 7px; background: #fff9; }
+.settlement-table-wrap table { width: 100%; min-width: 980px; border-collapse: collapse; font-size: 12px; }
+.settlement-table-wrap th, .settlement-table-wrap td { padding: 8px 10px; border-bottom: 1px solid #d8e0db; text-align: right; vertical-align: top; }
+.settlement-table-wrap th:nth-child(-n+2), .settlement-table-wrap td:nth-child(-n+2), .settlement-table-wrap th:last-child, .settlement-table-wrap td:last-child { text-align: left; }
+.settlement-table-wrap td:first-child small { display: block; letter-spacing: 0; margin-top: 2px; }
+.settlement-table-wrap tr.pending { background: #fff1c9; }
+.settlement-formula { margin: 10px 0 0; font-weight: 650; }
 .settlement-strip { display: flex; align-items: center; gap: 14px; margin: 10px 0; padding: 7px 14px; border: 1px solid #d9aaaa; border-radius: 7px; background: #f2dddd; font-size: 12px; }
 .settlement-strip strong { color: #315a48; text-transform: uppercase; letter-spacing: .08em; font-size: 10px; white-space: nowrap; }
 .settlement-strip span { color: #6b5555; }
@@ -193,5 +215,5 @@ main > section.panel:has(input[aria-label="PDF žádosti o platbu"]) .payment-li
 .funding-actions .funding-note { flex: 1; margin: 0; }
 .funding-actions button { flex: 0 0 auto; padding: 9px 12px; }
 @media (max-width: 520px) { .funding-actions { align-items: stretch; flex-direction: column; } .funding-actions button { align-self: flex-start; } }
-@media (max-width: 900px) { .metrics { grid-template-columns: repeat(2, 1fr); } .settlement { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .metrics { grid-template-columns: repeat(2, 1fr); } .settlement { grid-template-columns: 1fr; } .payment-list article .payment-values { align-items: flex-end; gap: 10px; } .payment-import-files { grid-template-columns: 1fr; } }
 @media (max-width: 900px) { .half-row { grid-template-columns: 1fr; } .half-placeholder { display: none; } .settlement-strip { align-items: flex-start; flex-direction: column; gap: 3px; } }

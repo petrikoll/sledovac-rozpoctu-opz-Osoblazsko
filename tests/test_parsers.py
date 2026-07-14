@@ -7,9 +7,30 @@ import openpyxl
 
 from app.pdf_parser import extract_budget_code, money, parse_payment_request
 from app.models import Transfer
-from app.xlsx_parser import export_budget_status, export_transfer_proposal, export_with_formulas, fallback_rows, parse_budget, validate_budget_structure
+from app.xlsx_parser import export_budget_status, export_transfer_proposal, export_with_formulas, fallback_rows, parse_budget, parse_financial_plan, validate_budget_structure
 
 SAMPLES = Path(__file__).parents[1] / "samples"
+
+
+def test_parse_iskp_financial_plan():
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "Export"
+    sheet.append(["Součtový řádek", "Pořadí finančního plánu", "Datum předložení",
+                  "Částka na krytí výdajů - plán", "Vyúčtování - plán",
+                  "Částka na krytí výdajů - skutečnost", "Vyúčtování - skutečnost",
+                  "Stav ŽoPl", "Zálohová platba", "Závěrečná platba"])
+    sheet.append([None, 1, None, 1000, 0, 980, 0, "Proplacená", True, False])
+    sheet.append([None, 2, None, 0, 900, 0, 875, "Zaregistrovaná", False, True])
+    output = BytesIO()
+    workbook.save(output)
+
+    result = parse_financial_plan(output.getvalue(), "financni-plan.xlsx")
+
+    assert result["file_name"] == "financni-plan.xlsx"
+    assert result["rows"][0]["coverage_actual"] == Decimal("980")
+    assert result["rows"][1]["settlement_actual"] == Decimal("875")
+    assert result["rows"][1]["is_final_payment"] is True
 
 
 def test_budget_code_with_internal_pdf_spaces_is_normalized():

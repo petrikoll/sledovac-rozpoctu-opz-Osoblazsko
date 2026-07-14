@@ -91,6 +91,56 @@ def _standard_rows(data: bytes) -> list[list[object]]:
     return [list(row) for row in wb["Export"].iter_rows(values_only=True)]
 
 
+def _plain(value: object) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    return " ".join("".join(char for char in text if not unicodedata.combining(char)).lower().split())
+
+
+def parse_financial_plan(source: str | Path | bytes, file_name: str | None = None) -> dict:
+    """Parse the IS KP21+ Financial plan export without trusting its calculated totals."""
+    data = source if isinstance(source, bytes) else Path(source).read_bytes()
+    name = file_name or (Path(source).name if not isinstance(source, bytes) else "financni-plan.xlsx")
+    try:
+        rows = _standard_rows(data)
+    except Exception:
+        rows = fallback_rows(data)
+    header_index = next((index for index, row in enumerate(rows)
+                         if any("poradi financniho planu" in _plain(cell) for cell in row)), None)
+    if header_index is None:
+        raise ValueError("Soubor není export Finančního plánu z IS KP21+.")
+    headers = {_plain(value): index for index, value in enumerate(rows[header_index])}
+    required = {
+        "order": "poradi financniho planu",
+        "coverage": "castka na kryti vydaju - skutecnost",
+        "settlement": "vyuctovani - skutecnost",
+        "state": "stav zopl",
+        "advance": "zalohova platba",
+        "final": "zaverecna platba",
+    }
+    columns: dict[str, int] = {}
+    for key, wanted in required.items():
+        match = next((index for header, index in headers.items() if wanted in header), None)
+        if match is None:
+            raise ValueError(f"Ve Finančním plánu chybí sloupec: {wanted}.")
+        columns[key] = match
+    parsed = []
+    for row in rows[header_index + 1:]:
+        order = decimal(row[columns["order"]] if len(row) > columns["order"] else None)
+        if order is None:
+            continue
+        parsed.append({
+            "sequence_number": int(order),
+            "coverage_actual": decimal(row[columns["coverage"]] if len(row) > columns["coverage"] else None) or Decimal("0"),
+            "settlement_actual": decimal(row[columns["settlement"]] if len(row) > columns["settlement"] else None) or Decimal("0"),
+            "state": str(row[columns["state"]] or "") if len(row) > columns["state"] else "",
+            "is_advance_payment": bool(row[columns["advance"]]) if len(row) > columns["advance"] else False,
+            "is_final_payment": bool(row[columns["final"]]) if len(row) > columns["final"] else False,
+        })
+    if not parsed:
+        raise ValueError("Finanční plán neobsahuje žádné řádky ŽoP.")
+    return {"file_name": name, "sha256": hashlib.sha256(data).hexdigest(), "rows": parsed}
+
+
 def parse_budget(source: str | Path | bytes, file_name: str | None = None) -> BudgetAnalysis:
     data = source if isinstance(source, bytes) else Path(source).read_bytes()
     name = file_name or (Path(source).name if not isinstance(source, bytes) else "rozpocet.xlsx")
@@ -264,6 +314,87 @@ def export_budget_status(rows: list[dict], monthly: dict[str, dict[str, Decimal]
     for column in range(3, len(headers) + 1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(column)].width = 17
     ws.sheet_view.showGridLines = False
+    output = BytesIO()
+    wb.save(output)
+    return output.getvalue()
+
+
+def export_final_settlement(project: dict, breakdown: dict) -> bytes:
+    """Create an auditable final-settlement workbook with formulas and source ŽoP rows."""
+    wb = openpyxl.Workbook()
+    summary = wb.active
+    summary.title = "Souhrn"
+    detail = wb.create_sheet("Žádosti o platbu")
+
+    summary.append(["KONTROLNÍ VÝPOČET ZÁVĚREČNÉHO VYPOŘÁDÁNÍ", None])
+    summary.append(["Projekt", project["project_name"]])
+    summary.append(["Registrační číslo", project["project_code"]])
+    summary.append(["Celkový rozpočet", project["total_budget"]])
+    summary.append(["Podíl prostředků poskytovatele", project["public_funding_rate"]])
+    summary.append([])
+    summary.append(["Úvodní zálohová platba", "=SUMIF('Žádosti o platbu'!C:C,\"Úvodní záloha\",'Žádosti o platbu'!L:L)"])
+    summary.append(["Dosud přijaté platby", "=SUM('Žádosti o platbu'!L:L)"])
+    summary.append(["Skutečně schválené způsobilé výdaje", "=SUM('Žádosti o platbu'!M:M)"])
+    summary.append(["Předloženo a dosud neschváleno", "=SUM('Žádosti o platbu'!N:N)-B9"])
+    summary.append(["Předpokládané způsobilé výdaje po schválení", "=SUM('Žádosti o platbu'!N:N)"])
+    summary.append(["Nárok poskytovatele po schválení", "=ROUND((B11-SUM('Žádosti o platbu'!K:K))*B5,2)"])
+    summary.append(["Předpokládaný rozdíl (+ doplatek / − vratka)", "=B12-B8"])
+    summary.append([])
+    summary.append(["Poznámka", "Neschválená závěrečná ŽoP je započtena pouze do orientačního scénáře. Konečnou částku stanoví poskytovatel."])
+
+    for cell in summary[1]:
+        cell.font = Font(bold=True, color="FFFFFF", size=13)
+        cell.fill = PatternFill("solid", fgColor="1F4E3D")
+    summary.merge_cells("A1:B1")
+    summary.column_dimensions["A"].width = 48
+    summary.column_dimensions["B"].width = 72
+    for row in range(4, 14):
+        summary.cell(row, 2).number_format = '0.00%' if row == 5 else '#,##0.00 "Kč"'
+    summary.cell(13, 2).font = Font(bold=True, color="9C0006")
+    summary.cell(13, 2).fill = PatternFill("solid", fgColor="FFC7CE")
+    summary.cell(15, 2).alignment = Alignment(wrap_text=True)
+    summary.freeze_panes = "A7"
+    summary.sheet_view.showGridLines = False
+
+    headers = [
+        "ŽoP", "Stav", "Typ", "Soubor", "Prokazované přímé", "Prokazovaný paušál",
+        "Prokazováno celkem", "Schválené přímé", "Schválený paušál", "Schváleno celkem",
+        "Čisté jiné peněžní příjmy", "Částka na krytí výdajů / zálohová platba", "Započteno jako schválené",
+        "Započteno v orientačním scénáři", "Vysvětlení", "Částka uvedená v PDF",
+        "Skutečně vyplaceno dle Finančního plánu", "Vyúčtování dle Finančního plánu", "Zdroj Finančního plánu",
+    ]
+    detail.append(headers)
+    for cell in detail[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="1F4E3D")
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    for item in breakdown["rows"]:
+        detail.append([
+            item["sequence_number"], item["status"], item["type"], item["source_file_name"],
+            item["declared_direct"], item["declared_lump_sum"], item["declared_total"],
+            item["approved_direct"], item["approved_lump_sum"], item["approved_total"], item["clean_other_income"],
+            item["received_payment"], item["approved_for_settlement"],
+            item["projected_for_settlement"], item["explanation"], item["pdf_public_payment"],
+            item["financial_plan_coverage_actual"], item["financial_plan_settlement_actual"],
+            item["financial_plan_source_file_name"],
+        ])
+        row = detail.max_row
+        if not item["is_approved"] and not item["is_advance_payment"]:
+            for cell in detail[row]:
+                cell.fill = PatternFill("solid", fgColor="FFF2CC")
+        detail.cell(row, 15).alignment = Alignment(wrap_text=True, vertical="top")
+    for column in list(range(5, 15)) + list(range(16, 19)):
+        for cells in detail.iter_cols(min_col=column, max_col=column, min_row=2):
+            cells[0].number_format = '#,##0.00 "Kč"'
+    widths = {"A": 8, "B": 30, "C": 18, "D": 24, "O": 58}
+    for column, width in widths.items():
+        detail.column_dimensions[column].width = width
+    for column in range(5, 15):
+        detail.column_dimensions[openpyxl.utils.get_column_letter(column)].width = 19
+    detail.freeze_panes = "E2"
+    detail.auto_filter.ref = detail.dimensions
+    detail.sheet_view.showGridLines = False
+
     output = BytesIO()
     wb.save(output)
     return output.getvalue()

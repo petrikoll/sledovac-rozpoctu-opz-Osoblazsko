@@ -20,12 +20,25 @@ type Payment = {
   request_version: number;
   is_advance_payment: boolean;
   is_final_payment: boolean;
+  state: string;
+  processing_state: string;
+  declared_direct_costs: number;
+  declared_lump_sum: number;
   approved_direct_costs: number;
   approved_lump_sum: number;
   approved_total: number;
   public_payment: number;
+  financial_plan_coverage_actual?: number | null;
+  financial_plan_settlement_actual?: number | null;
+  financial_plan_state?: string | null;
+  financial_plan_source_file_name?: string | null;
   source_file_name: string;
 };
+function paymentStatusIsApproved(payment: Pick<Payment, "state" | "processing_state">) {
+  const status = `${payment.state || ""} ${payment.processing_state || ""}`
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  return ["proplacena", "vyporadana", "schvalena"].some((value) => status.includes(value));
+}
 type LumpEntry = {
   lump_sum_entry_id: string;
   monitoring_period: string;
@@ -513,18 +526,26 @@ function PaymentRequests({ id }: { id: string }) {
   const [preview, setPreview] = useState<any>();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [planFile, setPlanFile] = useState<File | null>(null);
+  const [planNotice, setPlanNotice] = useState("");
   const qc = useQueryClient();
   const payments = useQuery({
     queryKey: ["payments", id],
     queryFn: () => api<Payment[]>(`/projects/${id}/payment-requests`),
   });
-  async function analyze(file: File) {
+  async function analyze() {
+    if (!pdfFile) {
+      setError("Nejprve vyberte PDF žádosti o platbu.");
+      return;
+    }
     setError("");
     setPreview(null);
     setBusy(true);
     try {
       const fd = new FormData();
-      fd.append("file", file);
+      fd.append("file", pdfFile);
+      if (planFile) fd.append("financial_plan", planFile);
       setPreview(
         await api(`/projects/${id}/payment-requests/analyze`, {
           method: "POST",
@@ -535,6 +556,26 @@ function PaymentRequests({ id }: { id: string }) {
       setError(
         e instanceof Error ? e.message : "PDF se nepodařilo analyzovat.",
       );
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function updateFinancialPlan(file: File) {
+    setError("");
+    setPlanNotice("");
+    setBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const result = await api<{ updated_payment_requests: number; source_file_name: string }>(`/projects/${id}/payment-requests/financial-plan`, { method: "POST", body: fd });
+      setPlanNotice(`Finanční plán byl načten. Aktualizováno ŽoP: ${result.updated_payment_requests}.`);
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["payments", id] }),
+        qc.invalidateQueries({ queryKey: ["dashboard", id] }),
+        qc.invalidateQueries({ queryKey: ["final-settlement", id] }),
+      ]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Finanční plán se nepodařilo načíst.");
     } finally {
       setBusy(false);
     }
@@ -568,15 +609,19 @@ function PaymentRequests({ id }: { id: string }) {
         Nahrávej PDF postupně podle pořadového čísla. Každé nejprve zkontroluj a
         pak potvrď.
       </p>
-      <input
-        aria-label="PDF žádosti o platbu"
-        type="file"
-        accept=".pdf,application/pdf"
-        disabled={busy}
-        onChange={(e) => e.target.files?.[0] && analyze(e.target.files[0])}
-      />
+      <div className="payment-import-files">
+        <label>PDF žádosti o platbu
+          <input aria-label="PDF žádosti o platbu" type="file" accept=".pdf,application/pdf" disabled={busy} onChange={(e) => setPdfFile(e.target.files?.[0] || null)} />
+        </label>
+        <label>Finanční plán z IS KP21+ (XLSX)
+          <input aria-label="Finanční plán k žádosti o platbu" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" disabled={busy} onChange={(e) => setPlanFile(e.target.files?.[0] || null)} />
+          <small>U závěrečné ŽoP je povinný, u ostatních doporučený.</small>
+        </label>
+        <button type="button" disabled={busy || !pdfFile} onClick={analyze}>Zkontrolovat ŽoP</button>
+      </div>
       {busy && <p>Analyzuji dokument…</p>}
       {error && <div className="alert">{error}</div>}
+      {planNotice && <div className="info">{planNotice}</div>}
       {preview && (
         <div className="preview">
           <h3>Kontrolní náhled ŽoP č. {preview.sequence_number}</h3>
@@ -589,22 +634,39 @@ function PaymentRequests({ id }: { id: string }) {
             <dd>
               {preview.is_advance_payment ? "Úvodní záloha" : "Vyúčtování"}
             </dd>
-            <dt>Schválené přímé výdaje</dt>
-            <dd>{czk.format(preview.approved_direct_costs)}</dd>
-            <dt>Schválený paušál</dt>
-            <dd>{czk.format(preview.approved_lump_sum)}</dd>
-            <dt>Schváleno celkem</dt>
-            <dd>{czk.format(preview.approved_total)}</dd>
-            <dt>Platba poskytovatele</dt>
+            <dt>Stav zpracování</dt>
+            <dd>{preview.processing_state || preview.state}</dd>
+            {!preview.is_advance_payment && <>
+              <dt>Prokazované přímé výdaje</dt>
+              <dd>{czk.format(preview.declared_direct_costs)}</dd>
+              <dt>Prokazovaný paušál</dt>
+              <dd>{czk.format(preview.declared_lump_sum)}</dd>
+              <dt>Prokazováno celkem</dt>
+              <dd>{czk.format(Number(preview.declared_direct_costs) + Number(preview.declared_lump_sum))}</dd>
+            </>}
+            {paymentStatusIsApproved(preview) && !preview.is_advance_payment && <>
+              <dt>Skutečně schváleno celkem</dt>
+              <dd>{czk.format(preview.approved_total)}</dd>
+            </>}
+            <dt>Částka na krytí výdajů / zálohová platba</dt>
             <dd>{czk.format(preview.public_payment)}</dd>
+            {preview.financial_plan_attached && <>
+              <dt>Skutečně vyplaceno dle Finančního plánu</dt>
+              <dd>{czk.format(preview.financial_plan_coverage_actual)}</dd>
+              <dt>Vyúčtování dle Finančního plánu</dt>
+              <dd>{czk.format(preview.financial_plan_settlement_actual)}</dd>
+            </>}
           </dl>
+          {preview.financial_plan_required && !preview.financial_plan_attached && (
+            <p className="alert">K závěrečné ŽoP musíte přiložit také export XLSX z Finančního plánu.</p>
+          )}
           {preview.is_advance_payment && (
             <p className="info">
               Toto je úvodní záloha. Do čerpání rozpočtu se nezapočítá.
             </p>
           )}
           <div className="actions">
-            <button onClick={confirm} disabled={busy}>
+            <button onClick={confirm} disabled={busy || (preview.financial_plan_required && !preview.financial_plan_attached)}>
               Potvrdit import ŽoP
             </button>
             <button
@@ -620,21 +682,37 @@ function PaymentRequests({ id }: { id: string }) {
       {payments.data && payments.data.length > 0 && (
         <div className="payment-list">
           <h3>Importované ŽoP</h3>
-          {payments.data.map((x) => (
-            <article key={x.payment_request_id}>
+          <label className="financial-plan-refresh">Doplnit nebo aktualizovat Finanční plán u již nahraných ŽoP
+            <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" disabled={busy} onChange={(e) => e.target.files?.[0] && updateFinancialPlan(e.target.files[0])} />
+          </label>
+          {payments.data.map((x) => {
+            const approved = paymentStatusIsApproved(x);
+            const declaredTotal = Number(x.declared_direct_costs) + Number(x.declared_lump_sum);
+            return <article key={x.payment_request_id}>
               <div>
                 <strong>ŽoP č. {x.sequence_number}</strong>
                 <small>
                   {x.source_file_name} · verze {x.request_version}
                 </small>
+                {x.financial_plan_source_file_name && <small>Finanční plán: {x.financial_plan_source_file_name}</small>}
               </div>
-              <span className={x.is_advance_payment ? "badge" : "amount"}>
-                {x.is_advance_payment
-                  ? "Úvodní záloha"
-                  : czk.format(x.approved_total)}
-              </span>
-            </article>
-          ))}
+              <div className="payment-values">
+                <span>
+                  <small>{x.is_advance_payment ? "ZÁLOHOVÁ PLATBA" : approved ? "SCHVÁLENÉ VÝDAJE" : "PŘEDLOŽENO KE SCHVÁLENÍ"}</small>
+                  <strong>{czk.format(x.is_advance_payment ? x.public_payment : approved ? x.approved_total : declaredTotal)}</strong>
+                </span>
+                {!x.is_advance_payment && (
+                  <span>
+                    <small>ČÁSTKA NA KRYTÍ VÝDAJŮ</small>
+                    <strong>{czk.format(x.public_payment)}</strong>
+                  </span>
+                )}
+                {x.financial_plan_coverage_actual != null && (
+                  <span><small>SKUTEČNĚ VYPLACENO DLE IS KP21+</small><strong>{czk.format(x.financial_plan_coverage_actual)}</strong></span>
+                )}
+              </div>
+            </article>;
+          })}
         </div>
       )}
     </section>
@@ -1535,6 +1613,8 @@ function BudgetChange({
   );
 }
 function FinalSettlement({ id }: { id: string }) {
+  const [exporting, setExporting] = useState(false);
+  const [error, setError] = useState("");
   const { data } = useQuery({
     queryKey: ["final-settlement", id],
     queryFn: () => api<any>(`/projects/${id}/final-settlement`),
@@ -1551,6 +1631,17 @@ function FinalSettlement({ id }: { id: string }) {
       </section>
     );
   const result = Number(data.settlement);
+  async function downloadCalculation() {
+    setError("");
+    setExporting(true);
+    try {
+      await downloadApi(`/projects/${id}/final-settlement.xlsx`, "Vypocet_zaverecneho_vyporadani.xlsx");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Výpočet se nepodařilo stáhnout.");
+    } finally {
+      setExporting(false);
+    }
+  }
   return (
     <section className={`settlement ${result < 0 ? "refund" : "supplement"}`}>
       <div>
@@ -1566,17 +1657,58 @@ function FinalSettlement({ id }: { id: string }) {
           {czk.format(Math.abs(result))}
         </strong>
         <p>
-          Výpočet je orientační do konečného schválení poskytovatelem dotace.
+          {data.orientacni
+            ? "Výpočet předpokládá plné schválení dosud neschválené závěrečné ŽoP."
+            : "Výpočet vychází ze schválených žádostí o platbu."}
         </p>
       </div>
       <dl>
-        <dt>Schválené způsobilé výdaje</dt>
+        <dt>Dosud skutečně schválené výdaje</dt>
+        <dd>{czk.format(Number(data.approved_eligible_total))}</dd>
+        <dt>Předloženo a dosud neschváleno</dt>
+        <dd>{czk.format(Number(data.submitted_pending_total))}</dd>
+        <dt>Předpokládané výdaje po schválení</dt>
         <dd>{czk.format(Number(data.eligible_total))}</dd>
         <dt>Nárok na prostředky poskytovatele</dt>
         <dd>{czk.format(Number(data.provider_entitlement))}</dd>
+        <dt>Úvodní zálohová platba</dt>
+        <dd>{czk.format(Number(data.initial_advance))}</dd>
         <dt>Dosud přijaté platby</dt>
         <dd>{czk.format(Number(data.net_received))}</dd>
       </dl>
+      <div className="settlement-actions">
+        <button className="secondary" type="button" onClick={downloadCalculation} disabled={exporting}>
+          {exporting ? "Připravuji XLSX…" : "Stáhnout výpočet XLSX"}
+        </button>
+        {error && <span className="alert">{error}</span>}
+      </div>
+      <details className="settlement-details">
+        <summary>Zobrazit podrobný výpočet po jednotlivých ŽoP</summary>
+        <div className="settlement-table-wrap">
+          <table>
+            <thead><tr>
+              <th>ŽoP</th><th>Stav</th><th>Prokazováno</th><th>Skutečně schváleno</th>
+              <th>Částka na krytí / zálohová platba</th><th>Použití ve výpočtu</th>
+            </tr></thead>
+            <tbody>
+              {data.rows.map((row: any) => (
+                <tr key={`${row.sequence_number}-${row.source_file_name}`} className={!row.is_approved && !row.is_advance_payment ? "pending" : ""}>
+                  <td><strong>{row.sequence_number}</strong><small>{row.type}</small></td>
+                  <td>{row.status}</td>
+                  <td>{czk.format(Number(row.declared_total))}</td>
+                  <td>{czk.format(Number(row.approved_total))}</td>
+                  <td>{czk.format(Number(row.received_payment))}</td>
+                  <td>{row.explanation}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="settlement-formula">
+          {czk.format(Number(data.provider_entitlement))} nárok poskytovatele − {czk.format(Number(data.net_received))} přijaté platby = {czk.format(result)}.
+          Záporný výsledek znamená vratku.
+        </p>
+      </details>
     </section>
   );
 }

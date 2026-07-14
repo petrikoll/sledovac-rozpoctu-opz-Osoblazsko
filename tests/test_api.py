@@ -3,9 +3,73 @@ from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
 from app.main import app, repo
-from app.models import Sd2MonthlyEntry
+from app.models import PaymentRequest, Sd2MonthlyEntry
 
 client = TestClient(app)
+
+
+def _payment(sequence: int, *, state: str, processing_state: str, advance: bool = False,
+             final: bool = False, declared: Decimal = Decimal("0"), approved: Decimal = Decimal("0"),
+             public_payment: Decimal = Decimal("0")) -> PaymentRequest:
+    return PaymentRequest(
+        project_code="CZ.SETTLEMENT", project_name="Vypořádání", recipient_name="Příjemce",
+        sequence_number=sequence, request_number=f"CZ.SETTLEMENT/{sequence}", request_version=1,
+        request_type="ANTE", state=state, processing_state=processing_state,
+        is_final_payment=final, is_advance_payment=advance,
+        declared_direct_costs=declared, approved_direct_costs=approved,
+        declared_lump_sum=0, approved_lump_sum=0, public_payment=public_payment,
+        approved_total=approved, source_sha256=f"hash-{sequence}", source_file_name=f"zop-{sequence}.pdf",
+    )
+
+
+def test_final_settlement_separates_paid_advance_from_pending_final_claim():
+    project = client.post("/api/projects", json={
+        "project_code": "CZ.SETTLEMENT", "project_name": "Vypořádání", "recipient_name": "Příjemce",
+        "public_funding_rate": 1,
+    }).json()
+    project_id = project["project_id"]
+    repo.payments[project_id] = [
+        _payment(1, state="Proplacená", processing_state="Proplacená příjemci/Vypořádaná",
+                 advance=True, public_payment=Decimal("300")),
+        _payment(2, state="Proplacená", processing_state="Proplacená příjemci/Vypořádaná",
+                 declared=Decimal("100"), approved=Decimal("100"), public_payment=Decimal("100")),
+        _payment(3, state="Zaregistrovaná", processing_state="Zaregistrovaná", final=True,
+                 declared=Decimal("50"), approved=Decimal("50"), public_payment=Decimal("0")),
+    ]
+
+    response = client.get(f"/api/projects/{project_id}/final-settlement")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert Decimal(data["initial_advance"]) == Decimal("300")
+    assert Decimal(data["net_received"]) == Decimal("400")
+    assert Decimal(data["approved_eligible_total"]) == Decimal("100.00")
+    assert Decimal(data["submitted_pending_total"]) == Decimal("50.00")
+    assert Decimal(data["settlement"]) == Decimal("-250.00")
+    assert Decimal(str(data["rows"][2]["approved_total"])) == Decimal("0")
+    assert Decimal(str(data["rows"][2]["projected_for_settlement"])) == Decimal("50")
+
+    exported = client.get(f"/api/projects/{project_id}/final-settlement.xlsx")
+    assert exported.status_code == 200
+    assert exported.content.startswith(b"PK")
+
+
+def test_final_settlement_prefers_actual_coverage_from_financial_plan():
+    project = client.post("/api/projects", json={
+        "project_code": "CZ.FINPLAN", "project_name": "Finanční plán", "recipient_name": "Příjemce",
+        "public_funding_rate": 1,
+    }).json()
+    payment = _payment(1, state="Proplacená", processing_state="Proplacená příjemci/Vypořádaná",
+                       advance=True, public_payment=Decimal("1100"))
+    payment.financial_plan_coverage_actual = Decimal("1000")
+    payment.financial_plan_settlement_actual = Decimal("0")
+    repo.payments[project["project_id"]] = [payment]
+
+    data = client.get(f"/api/projects/{project['project_id']}/final-settlement").json()
+
+    assert Decimal(data["net_received"]) == Decimal("1000")
+    assert Decimal(data["initial_advance"]) == Decimal("1000")
+    assert Decimal(str(data["rows"][0]["pdf_public_payment"])) == Decimal("1100")
 
 
 def test_mosty_malikova_bonus_is_offered_but_excluded_by_default():
@@ -160,7 +224,8 @@ def test_hydration_ignores_payment_for_missing_project(monkeypatch):
             "payment_request_id": "orphan", "project_id": "missing",
             "sequence_number": "1", "request_number": "orphan/1",
         }],
-        "UTRATA_PAUSALU": [], "SPOLUFINANCOVANI": [], "SD2_MESICE": [], "SD2_PRILOHY": [], "IMPORT_LOG": [],
+        "UTRATA_PAUSALU": [], "SPOLUFINANCOVANI": [], "SD2_MESICE": [], "SD2_PRILOHY": [],
+        "HARMONOGRAM_PROJEKTU": [], "IMPORT_LOG": [],
     }
     google = object.__new__(GoogleSheetsRepository)
     monkeypatch.setattr(google, "_records", lambda sheet: records[sheet])

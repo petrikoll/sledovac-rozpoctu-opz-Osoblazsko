@@ -21,7 +21,7 @@ SHEETS = {
     "PROJEKTY": ["project_id", "project_code", "project_name", "recipient_name", "financing_type", "total_budget", "public_funding_rate", "lump_sum_rate", "lump_sum_base_code", "current_monitoring_period", "total_monitoring_periods", "active_budget_version_id", "status", "created_at", "updated_at", "created_by"],
     "VERZE_ROZPOCTU": ["budget_version_id", "project_id", "version_number", "version_label", "effective_date", "total_amount", "source_file_name", "source_drive_file_id", "source_sha256", "change_description", "is_active", "created_at", "created_by"],
     "POLOZKY_ROZPOCTU": ["budget_item_id", "project_id", "budget_version_id", "code", "name", "parent_code", "level", "unit_custom", "unit_price", "unit_count", "total_amount", "percentage", "support_combination", "unit_preset", "unit_catalog", "category", "is_leaf", "is_new", "previous_amount", "transfer_locked", "minimum_remaining_amount", "planned_future_spending", "donor_priority", "source_row_number"],
-    "ZADOSTI_O_PLATBU": ["payment_request_id", "project_id", "request_number", "sequence_number", "request_version", "request_type", "monitoring_period", "state", "processing_state", "submitted_date", "finalized_date", "is_final_payment", "is_advance_payment", "declared_direct_costs", "approved_direct_costs", "declared_lump_sum", "approved_lump_sum", "approved_other_costs", "clean_other_income", "own_share", "public_payment", "approved_total", "source_file_name", "source_drive_file_id", "source_sha256", "active_revision", "imported_at", "imported_by"],
+    "ZADOSTI_O_PLATBU": ["payment_request_id", "project_id", "request_number", "sequence_number", "request_version", "request_type", "monitoring_period", "state", "processing_state", "submitted_date", "finalized_date", "is_final_payment", "is_advance_payment", "declared_direct_costs", "approved_direct_costs", "declared_lump_sum", "approved_lump_sum", "approved_other_costs", "clean_other_income", "own_share", "public_payment", "approved_total", "source_file_name", "source_drive_file_id", "source_sha256", "active_revision", "imported_at", "imported_by", "financial_plan_coverage_actual", "financial_plan_settlement_actual", "financial_plan_state", "financial_plan_source_file_name", "financial_plan_source_sha256"],
     "RADKY_ZOP": ["payment_line_id", "payment_request_id", "project_id", "source_table", "source_row_number", "source_page_number", "budget_item_code", "budget_item_name_raw", "accounting_period", "subject_label", "description", "declared_amount", "reduction_amount", "approved_amount", "line_type", "mapping_status", "mapped_budget_item_id"],
     "PLATBY_A_ZALOHY": ["cash_flow_id", "project_id", "payment_request_id", "cash_flow_type", "payment_date", "amount", "note", "created_at"],
     "UTRATA_PAUSALU": ["lump_sum_entry_id", "project_id", "monitoring_period", "entry_date", "entry_mode", "entered_amount", "calculated_period_delta", "cumulative_spent", "note", "created_at", "created_by"],
@@ -94,6 +94,15 @@ class GoogleSheetsRepository(Repository):
         if isinstance(value, (date, datetime)): return value.isoformat()
         return value
 
+    @staticmethod
+    def _a1_column(index: int) -> str:
+        result = ""
+        index += 1
+        while index:
+            index, remainder = divmod(index - 1, 26)
+            result = chr(65 + remainder) + result
+        return result
+
     def append_records(self, sheet: str, records: list[dict[str, Any]]) -> None:
         if not records: return
         rows = [[self._scalar(record.get(column, "")) for column in SHEETS[sheet]] for record in records]
@@ -105,8 +114,8 @@ class GoogleSheetsRepository(Repository):
         rows = self.api.values().get(spreadsheetId=self.id, range=f"'{sheet}'!A2:AZ").execute().get("values", [])
         for row_number, row in enumerate(rows, 2):
             if len(row) > key_col and str(row[key_col]) == str(key_value):
-                data = [{"range": f"'{sheet}'!{chr(65 + headers.index(name))}{row_number}",
-                         "values": [[self._scalar(value)]]} for name, value in changes.items() if name in headers and headers.index(name) < 26]
+                data = [{"range": f"'{sheet}'!{self._a1_column(headers.index(name))}{row_number}",
+                         "values": [[self._scalar(value)]]} for name, value in changes.items() if name in headers]
                 self.api.values().batchUpdate(spreadsheetId=self.id, body={"valueInputOption": "RAW", "data": data}).execute()
                 return
         raise ValueError(f"Záznam {key_value} v listu {sheet} nebyl nalezen.")

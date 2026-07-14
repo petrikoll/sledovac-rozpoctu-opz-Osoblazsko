@@ -126,6 +126,11 @@ class PaymentRequest(BaseModel):
     own_share: Decimal = Decimal("0")
     public_payment: Decimal = Decimal("0")
     approved_total: Decimal = Decimal("0")
+    financial_plan_coverage_actual: Decimal | None = None
+    financial_plan_settlement_actual: Decimal | None = None
+    financial_plan_state: str | None = None
+    financial_plan_source_file_name: str | None = None
+    financial_plan_source_sha256: str | None = None
     source_sha256: str
     source_file_name: str
     lines: list[PaymentLine] = []
