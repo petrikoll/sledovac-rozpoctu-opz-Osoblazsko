@@ -48,6 +48,7 @@ analyses: dict[str, dict] = {}
 MAX_SIZE = 20 * 1024 * 1024
 RECIPIENT_ONLY_USERS = {
     "starosta@divcihrad.cz": "osoblažský cech, z.ú.",
+    "emceckovm@gmail.com": "rodinné, komunitní a vzdělávací centrum emcéčko, z.s.",
 }
 PROJECT_ONLY_USERS = {
     "srssjesenik@gmail.com": "CZ.03.02.01/00/24_065/0004961",
