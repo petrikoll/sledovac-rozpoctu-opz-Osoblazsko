@@ -6,7 +6,7 @@ import re
 import unicodedata
 from collections import defaultdict
 from contextvars import ContextVar
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from io import BytesIO
 from uuid import uuid4
@@ -19,7 +19,7 @@ from google.auth.transport import requests
 from google.oauth2 import id_token
 
 from .calculations import final_settlement, lump_sum_metrics, propose_transfers
-from .models import CofinancingEntry, LumpSumEntry, Project, ProjectCreate, Sd2AttachmentRecord, Sd2MonthlyEntry, TransferCandidate
+from .models import CofinancingEntry, LumpSumEntry, Project, ProjectCreate, ProjectSchedule, Sd2AttachmentRecord, Sd2MonthlyEntry, TransferCandidate
 from .pdf_parser import extract_budget_code, parse_payment_request
 from .payroll_parser import parse_payroll_slips, parse_payslip_insurance
 from .repository import GoogleSheetsRepository, InMemoryRepository
@@ -152,6 +152,55 @@ def patch_project(project_id: str, changes: dict, user=Depends(require_admin)):
     if google_repo:
         google_repo.update_record("PROJEKTY", "project_id", project_id, {**allowed, "updated_at": value.updated_at})
     return value
+
+
+def next_month(value: date) -> date:
+    return date(value.year + (1 if value.month == 12 else 0), 1 if value.month == 12 else value.month + 1, 1)
+
+
+@app.get("/api/projects/{project_id}/schedule")
+def get_project_schedule(project_id: str, user=Depends(current_user)):
+    project(project_id, user)
+    return repo.project_schedules.get(project_id, {"project_start_date": None, "project_end_date": None, "periods": []})
+
+
+@app.put("/api/projects/{project_id}/schedule")
+def save_project_schedule(project_id: str, value: ProjectSchedule, user=Depends(require_admin)):
+    selected_project = project(project_id, user)
+    if value.project_start_date > value.project_end_date:
+        raise HTTPException(422, "Začátek projektu musí být před jeho koncem.")
+    periods = sorted(value.periods, key=lambda item: item.monitoring_period)
+    expected_numbers = list(range(1, selected_project.total_monitoring_periods + 1))
+    if [item.monitoring_period for item in periods] != expected_numbers:
+        raise HTTPException(422, "Harmonogram musí obsahovat všechna monitorovací období právě jednou.")
+    expected_start = value.project_start_date.replace(day=1)
+    project_end_month = value.project_end_date.replace(day=1)
+    for item in periods:
+        start_month = item.start_month.replace(day=1)
+        end_month = item.end_month.replace(day=1)
+        if start_month != item.start_month or end_month != item.end_month:
+            raise HTTPException(422, "Měsíce období musí být uloženy jako první den měsíce.")
+        if start_month != expected_start:
+            raise HTTPException(422, f"{item.monitoring_period}. období nenavazuje na předchozí období.")
+        if end_month < start_month:
+            raise HTTPException(422, f"Konec {item.monitoring_period}. období je před jeho začátkem.")
+        expected_start = next_month(end_month)
+    if periods[-1].end_month != project_end_month:
+        raise HTTPException(422, "Rozdělení období nepokrývá všechny měsíce až do konce projektu.")
+    stored = value.model_dump(mode="json")
+    repo.project_schedules[project_id] = stored
+    if google_repo:
+        google_repo.delete_records("HARMONOGRAM_PROJEKTU", "project_id", project_id)
+        now = datetime.utcnow().isoformat()
+        google_repo.append_records("HARMONOGRAM_PROJEKTU", [{
+            "project_id": project_id,
+            "project_start_date": value.project_start_date,
+            "project_end_date": value.project_end_date,
+            **item.model_dump(),
+            "updated_at": now,
+            "updated_by": user["email"],
+        } for item in periods])
+    return stored
 
 
 @app.post("/api/projects/{project_id}/budgets/analyze")

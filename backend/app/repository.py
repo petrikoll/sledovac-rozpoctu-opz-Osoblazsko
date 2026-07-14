@@ -30,6 +30,7 @@ SHEETS = {
     "SD2_PRILOHY": ["attachment_id", "project_id", "monitoring_period", "file_name", "drive_file_id", "uploaded_at", "uploaded_by"],
     # Keep the original six columns first for compatibility with existing Sheets.
     "PRACOVNICI_ROZPOCTU": ["worker_assignment_id", "project_id", "budget_item_code", "employee_names", "updated_at", "updated_by", "employee_name", "project_fte", "payroll_component_amount", "contract_contains"],
+    "HARMONOGRAM_PROJEKTU": ["project_id", "project_start_date", "project_end_date", "monitoring_period", "start_month", "end_month", "updated_at", "updated_by"],
     "NAVRHY_ZMEN": ["proposal_id", "project_id", "source_budget_version_id", "proposal_status", "calculation_mode", "reserve_rate", "total_deficit", "total_transfer", "created_at", "created_by", "note"],
     "NAVRHY_ZMEN_RADKY": ["proposal_line_id", "proposal_id", "source_item_code", "target_item_code", "amount", "reason", "source_available_before", "source_available_after", "target_balance_before", "target_balance_after"],
     "IMPORT_LOG": ["import_id", "project_id", "import_type", "source_file_name", "source_sha256", "status", "error_code", "message", "created_at", "created_by"],
@@ -53,6 +54,7 @@ class InMemoryRepository(Repository):
         self.sd2_entries: dict[str, list[Sd2MonthlyEntry]] = defaultdict(list)
         self.sd2_attachments: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self.worker_assignments: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        self.project_schedules: dict[str, dict[str, Any]] = {}
         self.project_access: dict[str, set[str]] = defaultdict(set)
         self.import_log: list[dict[str, Any]] = []
 
@@ -151,7 +153,7 @@ class GoogleSheetsRepository(Repository):
 
     def hydrate(self, target: InMemoryRepository) -> None:
         """Načte dávkově trvalý stav do rychlého aplikačního modelu."""
-        target.project_data.clear(); target.budgets.clear(); target.payments.clear(); target.lump_entries.clear(); target.cofinancing_entries.clear(); target.sd2_entries.clear(); target.sd2_attachments.clear(); target.worker_assignments.clear(); target.project_access.clear()
+        target.project_data.clear(); target.budgets.clear(); target.payments.clear(); target.lump_entries.clear(); target.cofinancing_entries.clear(); target.sd2_entries.clear(); target.sd2_attachments.clear(); target.worker_assignments.clear(); target.project_schedules.clear(); target.project_access.clear()
         for record in self._records("PROJEKT_UZIVATELE"):
             if self._bool(record.get("active", True)) and record.get("project_id") and record.get("email"):
                 target.project_access[str(record["project_id"])].add(str(record["email"]).lower())
@@ -210,4 +212,20 @@ class GoogleSheetsRepository(Repository):
         for record in worker_records:
             if record.get("project_id") and record.get("budget_item_code"):
                 target.worker_assignments[str(record["project_id"])].append(record)
+        for record in self._records("HARMONOGRAM_PROJEKTU"):
+            project_id = str(record.get("project_id", ""))
+            if not project_id or not record.get("monitoring_period"):
+                continue
+            schedule = target.project_schedules.setdefault(project_id, {
+                "project_start_date": record.get("project_start_date"),
+                "project_end_date": record.get("project_end_date"),
+                "periods": [],
+            })
+            schedule["periods"].append({
+                "monitoring_period": int(record["monitoring_period"]),
+                "start_month": record.get("start_month"),
+                "end_month": record.get("end_month"),
+            })
+        for schedule in target.project_schedules.values():
+            schedule["periods"].sort(key=lambda item: item["monitoring_period"])
         target.import_log = self._records("IMPORT_LOG")

@@ -31,6 +31,18 @@ class Project(ProjectCreate):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class MonitoringPeriodRange(BaseModel):
+    monitoring_period: int = Field(ge=1, le=20)
+    start_month: date
+    end_month: date
+
+
+class ProjectSchedule(BaseModel):
+    project_start_date: date
+    project_end_date: date
+    periods: list[MonitoringPeriodRange]
+
+
 class Sd2AttachmentRecord(BaseModel):
     """Metadata for an SD2 archive uploaded directly to the signed-in user's Drive."""
 

@@ -76,11 +76,18 @@ type WorkerAssignment = { budget_item_code: string; employee_names: string; empl
 type WorkerRule = { employee_name: string; project_fte: string; payroll_component_amount: string; contract_contains: string };
 type PayrollRow = { source_key: string; page_number: number; full_name: string; last_name: string; first_name: string; subject_id?: string; category: string; contract_name?: string; position_name?: string; component_code?: string; component_name?: string; component_description?: string; component_amount?: number; other_with_contributions?: number; project_bonus_available?: number; project_bonus_label?: string; employer_contribution_rate?: number; total_fte?: number; vacation_days?: number; vacation_hours?: number; project_vacation_hours?: number; month: string; gross_wage: number; employer_contributions: number; work_time_fund: number; worked_hours: number; project_hours?: number; project_fte?: number; employment_type: Sd2Entry["employment_type"]; budget_item_code: string; match_status: "matched" | "unmatched" | "ignored" };
 type PayrollPreview = { file_name: string; period: number; rows: PayrollRow[]; budget_items: { code: string; name: string }[] };
+type ProjectSchedule = { project_start_date: string | null; project_end_date: string | null; periods: { monitoring_period: number; start_month: string; end_month: string }[] };
 const CLIENT_ID =
   import.meta.env.VITE_GOOGLE_CLIENT_ID ||
   "812727560459-codfb0fu10agboif0lsjce3k6on4rj3d.apps.googleusercontent.com";
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
 const SD2_DRIVE_FOLDER = "Dokumenty aplikace OPZ+";
+
+function monthStart(value: string) { return value ? `${value.slice(0, 7)}-01` : ""; }
+function addMonths(value: string, count: number) { const date = new Date(`${monthStart(value)}T00:00:00Z`); date.setUTCMonth(date.getUTCMonth() + count); return date.toISOString().slice(0, 10); }
+function monthCountInclusive(start: string, end: string) { if (!start || !end) return 0; const first = new Date(`${monthStart(start)}T00:00:00Z`); const last = new Date(`${monthStart(end)}T00:00:00Z`); return (last.getUTCFullYear() - first.getUTCFullYear()) * 12 + last.getUTCMonth() - first.getUTCMonth() + 1; }
+function monthsInRange(start: string, end: string) { const count = monthCountInclusive(start, end); return count > 0 ? Array.from({ length: count }, (_, index) => addMonths(start, index)) : []; }
+function monthLabel(value: string) { return value ? new Date(`${monthStart(value)}T00:00:00Z`).toLocaleDateString("cs-CZ", { month: "long", year: "numeric" }) : "nenastaveno"; }
 
 async function googleDriveError(response: Response) {
   const payload = await response.json().catch(() => null);
@@ -969,11 +976,14 @@ function Sd2MonthlyDialog({ id, period, onClose }: { id: string; period: number;
 }
 function Sd2MonthlyDialogNew({ id, period, projectCode, projectName, onClose }: { id: string; period: number; projectCode: string; projectName: string; onClose: () => void }) {
   const qc = useQueryClient();
+  const isMostyProject = projectName.trim().toLocaleLowerCase("cs-CZ") === "mosty v rodině";
   const { data = [] } = useQuery({ queryKey: ["sd2-monthly", id, period], queryFn: () => api<Sd2Entry[]>(`/projects/${id}/sd2-monthly?period=${period}`) });
   const { data: attachments = [] } = useQuery({ queryKey: ["sd2-attachments", id, period], queryFn: () => api<any[]>(`/projects/${id}/sd2-attachments?period=${period}`) });
   const { data: budgetRows = [] } = useQuery({ queryKey: ["budget-status", id], queryFn: () => api<BudgetRow[]>(`/projects/${id}/budget-status`) });
+  const { data: projectSchedule } = useQuery({ queryKey: ["project-schedule", id], queryFn: () => api<ProjectSchedule>(`/projects/${id}/schedule`) });
   const [changes, setChanges] = useState<Record<string, string | number>>({}); const [saving, setSaving] = useState(false); const [error, setError] = useState(""); const [driveToken, setDriveToken] = useState(""); const [uploading, setUploading] = useState(false); const [uploadNotice, setUploadNotice] = useState(""); const [xmlDetails, setXmlDetails] = useState(false); const [defaultSubjectId, setDefaultSubjectId] = useState(""); const [extraMonths, setExtraMonths] = useState<string[]>([]); const [payrollPreview, setPayrollPreview] = useState<PayrollPreview | null>(null); const [payrollMapping, setPayrollMapping] = useState<Record<number, string>>({}); const [payrollProjectHours, setPayrollProjectHours] = useState<Record<number, string>>({}); const [payrollBonusMode, setPayrollBonusMode] = useState<Record<number, "exclude" | "all" | "partial">>({}); const [payrollBonusAmount, setPayrollBonusAmount] = useState<Record<number, string>>({}); const [analyzingPayroll, setAnalyzingPayroll] = useState(false);
-  const configuredMonths = projectCode === SD2_PROJECT_CODE ? (SD2_MONTHS[period - 1] || []) : [];
+  const scheduledPeriod = projectSchedule?.periods.find(item => item.monitoring_period === period);
+  const configuredMonths = scheduledPeriod ? monthsInRange(scheduledPeriod.start_month, scheduledPeriod.end_month) : projectCode === SD2_PROJECT_CODE ? (SD2_MONTHS[period - 1] || []) : [];
   const months = Array.from(new Set([...configuredMonths, ...data.map(entry => entry.month), ...extraMonths])).sort();
   const sd2Rows = budgetRows.filter(row => row.is_leaf && row.category === "direct" && /^1\.1\.[123](\.|$)/.test(row.code));
   const sd2Codes = projectCode === SD2_PROJECT_CODE ? SD2_CODES : sd2Rows.map(row => row.code);
@@ -1126,7 +1136,7 @@ function Sd2MonthlyDialogNew({ id, period, projectCode, projectName, onClose }: 
   return <div className="sd2-overlay" role="dialog" aria-modal="true"><section className="sd2-dialog">
     <div className="sd2-dialog-head">
       <div><h2>Podklad SD2 — {period}. období</h2><p>Měsíční údaje se zobrazí v příslušném období jako podklad před ŽoP.</p></div>
-      <div className="sd2-attachments"><label className="upload-button">{analyzingPayroll ? "Načítám mzdové podklady…" : "Načíst výplatní listy a pásky PDF"}<input type="file" accept=".pdf,application/pdf" multiple disabled={analyzingPayroll} onChange={e => e.target.files?.length && analyzePayroll(Array.from(e.target.files))} /></label>{driveToken ? <label className="upload-button">{uploading ? "Ukládám archiv…" : "Vybrat archiv ZIP / RAR"}<input type="file" accept=".zip,.rar" disabled={uploading} onChange={e => e.target.files?.[0] && upload(e.target.files[0])} /></label> : <button className="upload-button" onClick={connectDrive}>Připojit Google Drive</button>}{uploadNotice && <small className="sd2-upload-notice">{uploadNotice}</small>}</div>
+      <div className="sd2-attachments"><label className="upload-button">{analyzingPayroll ? "Načítám mzdové podklady…" : "Načíst výplatní listy a pásky PDF"}<input type="file" accept=".pdf,application/pdf" multiple disabled={analyzingPayroll} onChange={e => e.target.files?.length && analyzePayroll(Array.from(e.target.files))} /></label>{!isMostyProject && (driveToken ? <label className="upload-button">{uploading ? "Ukládám archiv…" : "Vybrat archiv ZIP / RAR"}<input type="file" accept=".zip,.rar" disabled={uploading} onChange={e => e.target.files?.[0] && upload(e.target.files[0])} /></label> : <button className="upload-button" onClick={connectDrive}>Připojit Google Drive</button>)}{uploadNotice && <small className="sd2-upload-notice">{uploadNotice}</small>}</div>
       <button className="secondary" onClick={onClose}>Zavřít</button>
     </div>
     {error && <div className="alert sd2-error">{error}</div>}
@@ -1151,22 +1161,40 @@ function Sd2MonthlyDialogNew({ id, period, projectCode, projectName, onClose }: 
     <div className="sd2-save">{projectName.trim().toLocaleLowerCase("cs-CZ") === "mosty v rodině" && <button className="danger sd2-clear-period" type="button" onClick={clearPeriod} disabled={saving}>Smazat vše</button>}<button className="secondary" type="button" onClick={() => setXmlDetails(true)}>Kontrola údajů XML</button><button type="button" onClick={exportXml} disabled={saving}>Stáhnout XML SD-2</button><button type="button" onClick={() => save()} disabled={saving}>{saving ? "Ukládám…" : "Uložit podklad SD2"}</button></div>
   </section></div>;
 }
-function BudgetWorkerSettings({ id, versionId, onClose }: { id: string; versionId?: string; onClose: () => void }) {
+function BudgetWorkerSettings({ id, versionId, periodCount, onClose }: { id: string; versionId?: string; periodCount: number; onClose: () => void }) {
   const qc = useQueryClient();
   const budgetQuery = useQuery({ queryKey: ["budget-status", id, versionId], queryFn: () => api<BudgetRow[]>(`/projects/${id}/budget-status${versionId ? `?version_id=${encodeURIComponent(versionId)}` : ""}`) });
   const savedQuery = useQuery({ queryKey: ["worker-assignments", id], queryFn: () => api<WorkerAssignment[]>(`/projects/${id}/worker-assignments`) });
+  const scheduleQuery = useQuery({ queryKey: ["project-schedule", id], queryFn: () => api<ProjectSchedule>(`/projects/${id}/schedule`) });
   const rows = budgetQuery.data || [];
   const saved = savedQuery.data || [];
   const [names, setNames] = useState<Record<string, string[]>>({}); const [saving, setSaving] = useState(false); const [error, setError] = useState("");
+  const [projectStart, setProjectStart] = useState(""); const [projectEnd, setProjectEnd] = useState(""); const [periodMonths, setPeriodMonths] = useState<number[]>(Array.from({ length: periodCount }, () => 0));
   useEffect(() => setNames(Object.fromEntries(saved.map(item => [item.budget_item_code, item.employee_names.split(/[,;\n]+/).map(name => name.trim()).filter(Boolean)]))), [saved]);
+  useEffect(() => { const schedule = scheduleQuery.data; if (!schedule) return; setProjectStart(schedule.project_start_date || ""); setProjectEnd(schedule.project_end_date || ""); setPeriodMonths(Array.from({ length: periodCount }, (_, index) => { const range = schedule.periods.find(item => item.monitoring_period === index + 1); return range ? monthCountInclusive(range.start_month, range.end_month) : 0; })); }, [scheduleQuery.data, periodCount]);
   const positions = rows.filter(row => row.is_leaf && row.category === "direct");
   function updateName(code: string, index: number, value: string) { setNames(current => { const list = [...(current[code]?.length ? current[code] : [""])]; list[index] = value; return { ...current, [code]: list }; }); }
   function addName(code: string) { setNames(current => ({ ...current, [code]: [...(current[code] || []), ""] })); }
   function removeName(code: string, index: number) { setNames(current => { const list = (current[code] || []).filter((_, itemIndex) => itemIndex !== index); return { ...current, [code]: list.length ? list : [""] }; }); }
-  async function save() { setSaving(true); setError(""); try { await api(`/projects/${id}/worker-assignments`, { method: "PUT", body: JSON.stringify({ assignments: positions.map(row => ({ budget_item_code: row.code, employee_names: (names[row.code] || []).map(name => name.trim()).filter(Boolean).join(", ") })) }) }); await qc.invalidateQueries({ queryKey: ["worker-assignments", id] }); onClose(); } catch (e) { setError(e instanceof Error ? e.message : "Nastavení se nepodařilo uložit."); } finally { setSaving(false); } }
-  const loading = budgetQuery.isLoading || savedQuery.isLoading;
-  const loadError = budgetQuery.error || savedQuery.error;
-  return <div className="sd2-overlay" role="dialog" aria-modal="true"><section className="worker-settings"><div className="worker-settings-head"><div><h2>Nastavení pracovníků</h2><p>Ke každé mzdové položce doplňte jednoho nebo více zaměstnanců. Nastavení se použije při automatickém načítání výplatních pásek.</p></div><button className="secondary" onClick={onClose}>Zavřít</button></div>{error && <div className="alert">{error}</div>}{loadError && <div className="alert">Nepodařilo se načíst položky rozpočtu nebo uložené zaměstnance.</div>}{loading ? <p>Načítám pracovní pozice…</p> : positions.length === 0 ? <div className="info">V této verzi rozpočtu nebyly nalezeny žádné přímé mzdové položky.</div> : <div className="table-wrap"><table><thead><tr><th>Kód</th><th>Pozice / položka rozpočtu</th><th>Zaměstnanci</th></tr></thead><tbody>{positions.map(row => { const employees = names[row.code]?.length ? names[row.code] : [""]; return <tr key={row.code}><td><b>{row.code}</b></td><td>{row.name}</td><td><div className="worker-name-list">{employees.map((employee, index) => <div className="worker-name-row" key={`${row.code}-${index}`}><input value={employee} placeholder="Např. Jana Nováková" onChange={e => updateName(row.code, index, e.target.value)} /><button type="button" className="secondary worker-remove" onClick={() => removeName(row.code, index)} aria-label={`Odstranit zaměstnance u položky ${row.code}`}>×</button></div>)}<button type="button" className="secondary worker-add" onClick={() => addName(row.code)}>+ Přidat zaměstnance</button></div></td></tr>; })}</tbody></table></div>}<div className="sd2-save"><button onClick={save} disabled={saving || loading || Boolean(loadError)}>{saving ? "Ukládám…" : "Uložit nastavení"}</button></div></section></div>;
+  function distributeMonths() { const total = monthCountInclusive(projectStart, projectEnd); if (total < periodCount) { setError("Projekt musí mít alespoň jeden měsíc pro každé období."); return; } const base = Math.floor(total / periodCount); const remainder = total % periodCount; setPeriodMonths(Array.from({ length: periodCount }, (_, index) => base + (index < remainder ? 1 : 0))); setError(""); }
+  function periodRange(index: number) { const offset = periodMonths.slice(0, index).reduce((sum, value) => sum + Number(value || 0), 0); const count = Number(periodMonths[index] || 0); return count > 0 && projectStart ? { start: addMonths(projectStart, offset), end: addMonths(projectStart, offset + count - 1) } : null; }
+  async function save() { setSaving(true); setError(""); try { const requests: Promise<unknown>[] = [api(`/projects/${id}/worker-assignments`, { method: "PUT", body: JSON.stringify({ assignments: positions.map(row => ({ budget_item_code: row.code, employee_names: (names[row.code] || []).map(name => name.trim()).filter(Boolean).join(", ") })) }) })]; if (projectStart || projectEnd || periodMonths.some(Boolean)) { if (!projectStart || !projectEnd) throw new Error("Vyplňte začátek i konec projektu."); const total = monthCountInclusive(projectStart, projectEnd); if (periodMonths.some(value => !Number.isInteger(Number(value)) || Number(value) < 1) || periodMonths.reduce((sum, value) => sum + Number(value), 0) !== total) throw new Error(`Rozdělte mezi období všech ${total} měsíců projektu.`); requests.push(api(`/projects/${id}/schedule`, { method: "PUT", body: JSON.stringify({ project_start_date: projectStart, project_end_date: projectEnd, periods: periodMonths.map((_, index) => { const range = periodRange(index)!; return { monitoring_period: index + 1, start_month: range.start, end_month: range.end }; }) }) })); } await Promise.all(requests); await Promise.all([qc.invalidateQueries({ queryKey: ["worker-assignments", id] }), qc.invalidateQueries({ queryKey: ["project-schedule", id] })]); onClose(); } catch (e) { setError(e instanceof Error ? e.message : "Nastavení se nepodařilo uložit."); } finally { setSaving(false); } }
+  const loading = budgetQuery.isLoading || savedQuery.isLoading || scheduleQuery.isLoading;
+  const loadError = budgetQuery.error || savedQuery.error || scheduleQuery.error;
+  return <div className="sd2-overlay" role="dialog" aria-modal="true"><section className="worker-settings">
+    <div className="worker-settings-head"><div><h2>Nastavení projektu</h2><p>Nastavte harmonogram monitorovacích období a pracovníky přiřazené k rozpočtovým položkám.</p></div><button className="secondary" onClick={onClose}>Zavřít</button></div>
+    {error && <div className="alert">{error}</div>}
+    {loadError && <div className="alert">Nepodařilo se načíst nastavení projektu.</div>}
+    <section className="project-schedule-settings">
+      <div className="settings-section-head"><div><h3>Harmonogram projektu</h3><p>Rozdělte všechny kalendářní měsíce projektu mezi monitorovací období.</p></div><button type="button" className="secondary" onClick={distributeMonths}>Rozdělit rovnoměrně</button></div>
+      <div className="project-date-fields"><label>Začátek projektu<input type="date" value={projectStart} onChange={e => setProjectStart(e.target.value)} /></label><label>Konec projektu<input type="date" value={projectEnd} onChange={e => setProjectEnd(e.target.value)} /></label><div className="schedule-total"><small>Celkem</small><b>{monthCountInclusive(projectStart, projectEnd) || "—"} měsíců</b></div></div>
+      <div className="period-month-settings">{periodMonths.map((count, index) => { const range = periodRange(index); return <label key={index}><b>{index + 1}. období</b><span><input type="number" min="1" step="1" value={count || ""} onChange={e => setPeriodMonths(current => current.map((value, itemIndex) => itemIndex === index ? Number(e.target.value) : value))} /> měsíců</span><small>{range ? `${monthLabel(range.start)} – ${monthLabel(range.end)}` : "Zadejte počet měsíců"}</small></label>; })}</div>
+    </section>
+    <section className="worker-assignment-settings"><h3>Pracovníci v rozpočtových položkách</h3><p>Ke každé mzdové položce doplňte jednoho nebo více zaměstnanců. Nastavení se použije při automatickém načítání výplatních pásek.</p>
+      {loading ? <p>Načítám nastavení…</p> : positions.length === 0 ? <div className="info">V této verzi rozpočtu nebyly nalezeny žádné přímé mzdové položky.</div> : <div className="table-wrap"><table><thead><tr><th>Kód</th><th>Pozice / položka rozpočtu</th><th>Zaměstnanci</th></tr></thead><tbody>{positions.map(row => { const employees = names[row.code]?.length ? names[row.code] : [""]; return <tr key={row.code}><td><b>{row.code}</b></td><td>{row.name}</td><td><div className="worker-name-list">{employees.map((employee, index) => <div className="worker-name-row" key={`${row.code}-${index}`}><input value={employee} placeholder="Např. Jana Nováková" onChange={e => updateName(row.code, index, e.target.value)} /><button type="button" className="secondary worker-remove" onClick={() => removeName(row.code, index)} aria-label={`Odstranit zaměstnance u položky ${row.code}`}>×</button></div>)}<button type="button" className="secondary worker-add" onClick={() => addName(row.code)}>+ Přidat zaměstnance</button></div></td></tr>; })}</tbody></table></div>}
+    </section>
+    <div className="sd2-save"><button onClick={save} disabled={saving || loading || Boolean(loadError)}>{saving ? "Ukládám…" : "Uložit nastavení"}</button></div>
+  </section></div>;
 }
 function BudgetOverview({
   id,
@@ -1331,7 +1359,7 @@ function BudgetOverview({
         </table>
       </div>
       {sd2Period && <Sd2MonthlyDialogNew id={id} period={sd2Period} projectCode={projectCode || ""} projectName={projectName || ""} onClose={() => setSd2Period(null)} />}
-      {workerSettingsOpen && <BudgetWorkerSettings id={id} versionId={selectedVersion} onClose={() => setWorkerSettingsOpen(false)} />}
+      {workerSettingsOpen && <BudgetWorkerSettings id={id} versionId={selectedVersion} periodCount={periodCount} onClose={() => setWorkerSettingsOpen(false)} />}
     </section>
   );
 }
