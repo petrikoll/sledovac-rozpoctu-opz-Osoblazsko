@@ -26,6 +26,34 @@ def test_srssjesenik_can_only_view_jesenicko_project():
     assert can_view_project(other["project_id"], user) is False
 
 
+def test_editor_can_save_worker_assignments():
+    project = client.post("/api/projects", json={
+        "project_code": "CZ.MOSTY.WORKERS",
+        "project_name": "Mosty v rodině",
+        "recipient_name": "P",
+    }).json()
+    from app.main import require_editor
+    app.dependency_overrides[require_editor] = lambda: {
+        "email": "ucetni@example.cz",
+        "role": "editor",
+    }
+    try:
+        response = client.put(f"/api/projects/{project['project_id']}/worker-assignments", json={
+            "assignments": [{
+                "budget_item_code": "1.1.1.1",
+                "employee_names": "Jana Nováková, Petr Novák",
+            }],
+        })
+    finally:
+        app.dependency_overrides.pop(require_editor, None)
+
+    assert response.status_code == 200
+    assert response.json()[0]["employee_names"] == "Jana Nováková, Petr Novák"
+    saved = client.get(f"/api/projects/{project['project_id']}/worker-assignments")
+    assert saved.status_code == 200
+    assert saved.json()[0]["budget_item_code"] == "1.1.1.1"
+
+
 def test_delete_sd2_period_keeps_other_periods():
     project = client.post("/api/projects", json={"project_code": "CZ.MOSTY", "project_name": "Mosty v rodině", "recipient_name": "P"}).json()
     project_id = project["project_id"]

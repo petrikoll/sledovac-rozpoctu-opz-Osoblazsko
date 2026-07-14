@@ -452,7 +452,7 @@ async def analyze_payroll_slips(project_id: str, period: int, file: UploadFile =
     assignments = repo.worker_assignments[project_id]
     assigned_codes: dict[str, str] = {}
     for assignment in assignments:
-        for name in str(assignment.get("employee_names", "")).split(","):
+        for name in re.split(r"[,;\n]+", str(assignment.get("employee_names", ""))):
             if name.strip():
                 assigned_codes[normalized_name(name)] = str(assignment.get("budget_item_code", ""))
                 assigned_codes[normalized_name(" ".join(reversed(name.strip().split())))] = str(assignment.get("budget_item_code", ""))
@@ -592,7 +592,7 @@ def worker_assignments(project_id: str, user=Depends(current_user)):
 
 
 @app.put("/api/projects/{project_id}/worker-assignments")
-def save_worker_assignments(project_id: str, body: dict, user=Depends(require_admin)):
+def save_worker_assignments(project_id: str, body: dict, user=Depends(require_editor)):
     project(project_id, user)
     records = []
     for item in body.get("assignments", []):

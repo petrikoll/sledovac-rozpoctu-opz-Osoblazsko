@@ -46,6 +46,11 @@ input, select { padding: 8px 9px; }
 .worker-settings-head h2 { margin: 0; }
 .worker-settings-head p { max-width: 650px; margin: 5px 0 14px; color: #52655c; }
 .worker-settings td input { width: 100%; min-width: 220px; box-sizing: border-box; }
+.worker-name-list { display: grid; gap: 7px; }
+.worker-name-row { display: grid; grid-template-columns: minmax(220px, 1fr) auto; gap: 6px; align-items: center; }
+.worker-name-row input { min-width: 0; }
+.worker-name-row .worker-remove { padding: 9px 12px; color: #8f2525 !important; }
+.worker-name-list .worker-add { justify-self: start; padding: 8px 11px; font-size: 12px; }
 .budget-settings-button { white-space: nowrap; }
 .sd2-dialog-head { display: flex; justify-content: space-between; gap: 16px; align-items: start; }
 .sd2-attachments { display: grid; gap: 4px; max-width: 330px; }
