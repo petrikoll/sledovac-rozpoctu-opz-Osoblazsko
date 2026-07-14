@@ -376,17 +376,22 @@ def _mosty_payroll_rows(rows: list[dict], allowed: set[str]) -> list[dict]:
             result.append(value)
 
     def final_row(source: dict, code: str, gross: Decimal, fund: Decimal, hours: Decimal,
-                  target_wage: Decimal, correction: Decimal = Decimal("0"), note: str = "") -> None:
+                  target_wage: Decimal, correction: Decimal = Decimal("0"), note: str = "",
+                  project_bonus_available: Decimal = Decimal("0"), project_bonus_label: str = "") -> None:
         value = dict(source)
         exact_insurance = source.get("contract_employer_insurance")
-        insurance = ((Decimal(str(exact_insurance)) * target_wage / gross).quantize(Decimal("0.01"))
-                     if exact_insurance is not None and gross else (target_wage * Decimal("0.338")).quantize(Decimal("0.01")))
+        insurance_rate = (Decimal(str(exact_insurance)) / gross
+                          if exact_insurance is not None and gross else Decimal("0.338"))
+        insurance = (target_wage * insurance_rate).quantize(Decimal("0.01"))
         value.update({
             "source_key": f'{source["source_key"]}-sd2-{code}', "budget_item_code": code if code in allowed else "",
             "match_status": "matched" if code in allowed else "unmatched", "gross_wage": gross,
             "contract_gross": gross, "work_time_fund": fund, "project_hours": hours,
             "component_amount": target_wage, "other_with_contributions": correction,
             "employer_contributions": insurance,
+            "employer_contribution_rate": insurance_rate,
+            "project_bonus_available": project_bonus_available,
+            "project_bonus_label": project_bonus_label,
             "component_description": note or source.get("component_description", ""),
         })
         result.append(value)
@@ -404,10 +409,17 @@ def _mosty_payroll_rows(rows: list[dict], allowed: set[str]) -> list[dict]:
             component = next((row for row in group if row.get("component_code") == "M01" and int(row.get("component_occurrence", 0)) == 3), None)
             if not component or not fund:
                 ignored(group); continue
+            bonus_components = [row for row in group if row.get("component_code") in {"C01", "M06"}
+                                or any(token in normalized_name(str(row.get("component_name", "")))
+                                       for token in ("premie", "odmena", "bonus", "osobni ohodnoceni"))]
+            available_bonus = sum((Decimal(str(row.get("component_amount", 0))) for row in bonus_components), Decimal("0"))
+            bonus_label = ", ".join(dict.fromkeys(str(row.get("component_name", "")).strip()
+                                                     for row in bonus_components if str(row.get("component_name", "")).strip()))
             target = Decimal(str(component["component_amount"])); hours = (full_fund * Decimal("0.2")).quantize(Decimal("0.01"))
             calculated = (gross / fund * hours).quantize(Decimal("0.01"))
             final_row(component, "1.1.1.3", gross, fund, hours, target, target - calculated,
-                      "Projektový HPP 0,2; korekce dorovnává odlišnou sazbu projektové části")
+                      "Projektový HPP 0,2; korekce dorovnává odlišnou sazbu projektové části",
+                      available_bonus, bonus_label)
         elif person == normalized_name("Martina Pírková") and "ps mosty v rodine" in contract:
             bonus = sum((Decimal(str(row["component_amount"])) for row in group if row.get("component_code") == "M06"), Decimal("0"))
             mapping = ((1, "1.1.1.7", Decimal("0.5")), (2, "1.1.1.5", Decimal("0.3")), (3, "1.1.1.4", Decimal("0.2")))

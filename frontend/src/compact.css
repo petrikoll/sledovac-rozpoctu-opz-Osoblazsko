@@ -94,6 +94,9 @@ input, select { padding: 8px 9px; }
 .payroll-preview input,.payroll-preview select { min-width: 115px; padding: 6px; font-size: 11px; }
 .payroll-preview select { min-width: 245px; }
 .payroll-preview select.unmatched { border-color: #c7664c; background: #fff1ed; }
+.payroll-preview .payroll-bonus { display: grid; gap: 5px; min-width: 205px; }
+.payroll-preview .payroll-bonus small { margin: 0; color: #6b4c12; }
+.payroll-preview .payroll-bonus select,.payroll-preview .payroll-bonus input { min-width: 205px; }
 .payroll-preview-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
 .sd2-empty { display: grid; gap: 3px; margin: 10px 0; padding: 18px; border: 1px dashed #aebdb5; border-radius: 8px; color: #52655c; text-align: center; }
 .budget-overview .inactive-period { color: #9ba6a0; text-align: center; font-size: 15px !important; }
