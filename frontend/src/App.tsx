@@ -1466,6 +1466,7 @@ function BudgetOverview({
     ? monthsInRange(scheduledExpandedPeriod.start_month, scheduledExpandedPeriod.end_month)
     : storedExpandedMonths;
   const expandedMonthColumns = expandedPeriod ? (expandedMonths.length ? expandedMonths : [""]) : [];
+  const visiblePeriods = expandedPeriod ? [String(expandedPeriod)] : periods;
   const selectedIndex =
     versions.data?.findIndex((v) => v.version_id === selectedVersion) ?? -1;
   const historical = Boolean(
@@ -1522,12 +1523,12 @@ function BudgetOverview({
       </div>
       {deleteError && <p className="error">{deleteError}</p>}
       <div className="table-wrap">
-        <table className={expandedPeriod ? "months-expanded-table" : ""} style={{ minWidth: 1120 + Math.max(0, expandedMonthColumns.length - 1) * 105 }}>
+        <table className={expandedPeriod ? "months-expanded-table" : ""} style={{ minWidth: expandedPeriod ? "100%" : 1120 }}>
           <thead>
             <tr>
               <th rowSpan={2}>Kód a položka</th>
               <th rowSpan={2}>Rozpočet</th>
-              {periods.map((p) => {
+              {visiblePeriods.map((p) => {
                 const expanded = expandedPeriod === Number(p);
                 return <th className={`${expanded ? "" : "period-col"} sd2-period-button ${expanded ? "period-expanded" : ""}`} key={p} rowSpan={expanded ? 1 : 2} colSpan={expanded ? expandedMonthColumns.length : 1}>
                   <span className="period-title"><button type="button" className="period-expand-button" aria-expanded={expanded} title={expanded ? `Skrýt měsíce ${p}. období` : `Zobrazit měsíce ${p}. období`} onClick={() => setExpandedPeriod(expanded ? null : Number(p))}>{expanded ? "▴" : "▾"}</button>{p}. období</span>
@@ -1561,7 +1562,7 @@ function BudgetOverview({
                   )}
                 </td>
                 <td>{czk.format(row.total_amount)}</td>
-                {periods.map((p) => expandedPeriod === Number(p)
+                {visiblePeriods.map((p) => expandedPeriod === Number(p)
                   ? <Fragment key={p}>{expandedMonthColumns.map(month => {
                     const value = month ? row.months?.[p]?.[month] : undefined;
                     return <td className={`month-col ${value == null ? "inactive-period" : ""}`} key={month || "empty"}>{value != null ? czk.format(value) : "—"}</td>;
