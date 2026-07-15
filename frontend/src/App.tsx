@@ -91,6 +91,13 @@ type WorkerRule = { employee_name: string; project_fte: string; payroll_componen
 type PayrollRow = { source_key: string; page_number: number; full_name: string; last_name: string; first_name: string; subject_id?: string; category: string; contract_name?: string; position_name?: string; component_code?: string; component_name?: string; component_description?: string; component_amount?: number; other_with_contributions?: number; project_bonus_available?: number; project_bonus_label?: string; employer_contribution_rate?: number; total_fte?: number; vacation_days?: number; vacation_hours?: number; project_vacation_hours?: number; month: string; payment_date?: string | null; gross_wage: number; employer_contributions: number; work_time_fund: number; worked_hours: number; project_hours?: number; project_fte?: number; employment_type: Sd2Entry["employment_type"]; budget_item_code: string; match_status: "matched" | "unmatched" | "ignored" };
 type PayrollPreview = { file_name: string; period: number; rows: PayrollRow[]; budget_items: { code: string; name: string }[] };
 type ProjectSchedule = { project_start_date: string | null; project_end_date: string | null; periods: { monitoring_period: number; start_month: string; end_month: string }[] };
+
+function personnelBudgetRows(rows: BudgetRow[]) {
+  const candidates = rows.filter(row => row.category === "direct" && /^1\.1\.[123]\.\d+(\.|$)/.test(row.code));
+  const unique = [...new Map(candidates.map(row => [row.code, row])).values()];
+  return unique.filter(row => !unique.some(other => other.code !== row.code && other.code.startsWith(`${row.code}.`)));
+}
+
 const CLIENT_ID =
   import.meta.env.VITE_GOOGLE_CLIENT_ID ||
   "812727560459-codfb0fu10agboif0lsjce3k6on4rj3d.apps.googleusercontent.com";
@@ -1067,8 +1074,8 @@ function Sd2MonthlyDialogNew({ id, period, projectCode, projectName, onClose }: 
   const scheduledPeriod = projectSchedule?.periods.find(item => item.monitoring_period === period);
   const configuredMonths = scheduledPeriod ? monthsInRange(scheduledPeriod.start_month, scheduledPeriod.end_month) : projectCode === SD2_PROJECT_CODE ? (SD2_MONTHS[period - 1] || []) : [];
   const months = Array.from(new Set([...configuredMonths, ...data.map(entry => entry.month), ...extraMonths])).sort();
-  const sd2Rows = budgetRows.filter(row => row.is_leaf && row.category === "direct" && /^1\.1\.[123](\.|$)/.test(row.code));
-  const sd2Codes = projectCode === SD2_PROJECT_CODE ? SD2_CODES : sd2Rows.map(row => row.code);
+  const sd2Rows = personnelBudgetRows(budgetRows);
+  const sd2Codes = projectCode === SD2_PROJECT_CODE ? SD2_CODES : [...new Set(sd2Rows.map(row => row.code))];
   const sd2Names = Object.fromEntries(sd2Rows.map(row => [row.code, row.name]));
   useEffect(() => { const savedSubjectId = data.find(entry => entry.subject_id)?.subject_id; if (savedSubjectId) setDefaultSubjectId(savedSubjectId); }, [data]);
   const numericFields = new Set<keyof Sd2Entry>(["gross_wage", "employer_contributions", "other_with_contributions", "other_without_contributions", "work_time_fund", "project_hours"]);
@@ -1271,7 +1278,7 @@ function BudgetWorkerSettings({ id, versionId, periodCount, onClose }: { id: str
     return result;
   }, {})), [saved]);
   useEffect(() => { const schedule = scheduleQuery.data; if (!schedule) return; setProjectStart(schedule.project_start_date || ""); setProjectEnd(schedule.project_end_date || ""); setPeriodMonths(Array.from({ length: periodCount }, (_, index) => { const range = schedule.periods.find(item => item.monitoring_period === index + 1); return range ? monthCountInclusive(range.start_month, range.end_month) : 0; })); }, [scheduleQuery.data, periodCount]);
-  const positions = rows.filter(row => row.is_leaf && row.category === "direct");
+  const positions = personnelBudgetRows(rows);
   function updateName(code: string, index: number, value: string) { setNames(current => { const list = [...(current[code]?.length ? current[code] : [""])]; list[index] = value; return { ...current, [code]: list }; }); }
   function addName(code: string) { setNames(current => ({ ...current, [code]: [...(current[code] || []), ""] })); }
   function removeName(code: string, index: number) { setNames(current => { const list = (current[code] || []).filter((_, itemIndex) => itemIndex !== index); return { ...current, [code]: list.length ? list : [""] }; }); }

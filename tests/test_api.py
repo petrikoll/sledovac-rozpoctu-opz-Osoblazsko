@@ -232,6 +232,22 @@ def test_sd2_keeps_multiple_workers_in_same_budget_item_and_month():
     assert [(item["first_name"], item["gross_wage"]) for item in response.json()] == [("Jana", "20000"), ("Petr", "25000")]
 
 
+def test_sd2_budget_items_exclude_summary_and_non_personnel_rows():
+    project = client.post("/api/projects", json={"project_code": "CZ.FILTER", "project_name": "Filtr", "recipient_name": "P"}).json()
+    project_id = project["project_id"]
+    repo.project_data[project_id].active_budget_version_id = "v1"
+    repo.budgets[project_id] = [{"version_id": "v1", "analysis": SimpleNamespace(items=[
+        SimpleNamespace(code="1.1.3", category="direct"),
+        SimpleNamespace(code="1.1.3.1", category="direct"),
+        SimpleNamespace(code="1.3.1", category="direct"),
+        SimpleNamespace(code="1.1.1.1", category="direct"),
+        SimpleNamespace(code="1.1.1.1.1", category="direct"),
+    ])}]
+    from app.main import sd2_budget_items
+
+    assert [item.code for item in sd2_budget_items(project_id)] == ["1.1.3.1", "1.1.1.1.1"]
+
+
 def test_sd2_xml_download_does_not_save_entries(monkeypatch):
     project = client.post("/api/projects", json={"project_code": "CZ.XML", "project_name": "XML", "recipient_name": "P"}).json()
     project_id = project["project_id"]

@@ -485,8 +485,12 @@ def sd2_budget_items(project_id: str):
     version = next((value for value in repo.budgets[project_id] if value["version_id"] == p.active_budget_version_id), None)
     if not version:
         return []
-    return [item for item in version["analysis"].items
-            if item.is_leaf and item.category == "direct" and re.match(r"^1\.1\.[123](?:\.|$)", item.code)]
+    items = version["analysis"].items
+    candidates = [item for item in items
+                  if item.category == "direct" and re.match(r"^1\.1\.[123]\.\d+(?:\.|$)", item.code)]
+    unique = {item.code: item for item in candidates}
+    return [item for code, item in unique.items()
+            if not any(other_code.startswith(f"{code}.") for other_code in unique if other_code != code)]
 
 
 def normalized_name(value: str) -> str:
