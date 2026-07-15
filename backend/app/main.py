@@ -886,20 +886,46 @@ def _analyze_payroll_batch_archive(data: bytes, user: dict) -> dict:
             "total_files": len(infos)}
 
 
+def _description_number(value: Decimal) -> str:
+    text = format(value.quantize(Decimal("0.01")), "f").rstrip("0").rstrip(".")
+    return text.replace(".", ",")
+
+
+def _description_money(value: Decimal) -> str:
+    return f'{value.quantize(Decimal("0.01")):,.2f}'.replace(",", " ").replace(".", ",")
+
+
+def _batch_description(row: dict) -> str:
+    parts = []
+    vacation_days = Decimal(str(row.get("vacation_days", 0) or 0))
+    vacation_hours = Decimal(str(row.get("project_vacation_hours", row.get("vacation_hours", 0)) or 0))
+    bonus = Decimal(str(row.get("project_bonus_available", 0) or 0))
+    other_with = Decimal(str(row.get("other_with_contributions", 0) or 0))
+    other_without = Decimal(str(row.get("other_without_contributions", 0) or 0))
+    if vacation_days or vacation_hours:
+        days_unit = "den" if vacation_days == 1 else ("dny" if vacation_days in {2, 3, 4} else "dní")
+        parts.append(f"Dovolená: {_description_number(vacation_days)} {days_unit} / {_description_number(vacation_hours)} hod.")
+    if bonus:
+        parts.append(f"Mimořádná odměna: {_description_money(bonus)} Kč.")
+    if other_with:
+        parts.append(f"Další výdaj s odvody: {_description_money(other_with)} Kč.")
+    if other_without:
+        parts.append(f"Další výdaj bez odvodů: {_description_money(other_without)} Kč.")
+    return " ".join(parts) if parts else "Bez dovolené a mimořádné odměny."
+
+
 def _batch_entry(row: dict, period: int) -> Sd2MonthlyEntry:
     employment = sd2_employment_type(str(row["budget_item_code"]))
-    relation = {"Smlouva": "Pracovní smlouva", "DPC": "Dohoda o pracovní činnosti", "DPP": "Dohoda o provedení práce"}[employment]
-    performance = str(row.get("performance_code", "")).strip()
-    fte = Decimal(str(row.get("total_fte", 0)))
     return Sd2MonthlyEntry(
         monitoring_period=period, month=row["month"], budget_item_code=str(row["budget_item_code"]),
         gross_wage=row.get("gross_wage", 0), employer_contributions=row.get("employer_contributions", 0),
-        other_with_contributions=row.get("other_with_contributions", 0), other_without_contributions=0,
+        other_with_contributions=row.get("other_with_contributions", 0),
+        other_without_contributions=row.get("other_without_contributions", 0),
         payment_date=row.get("payment_date"), subject_id=str(row.get("subject_id", "")),
         first_name=str(row.get("first_name", "")), last_name=str(row.get("last_name", "")),
         employment_type=employment, work_time_fund=row.get("work_time_fund", 0),
         project_hours=row.get("project_hours", row.get("worked_hours", 0)),
-        description=f"{relation}; výkon {performance}; úvazek {fte}; automaticky načteno ze společného ZIP.",
+        description=_batch_description(row),
     )
 
 
@@ -941,7 +967,9 @@ async def import_payroll_batch(file: UploadFile = File(...), user=Depends(requir
         replaced_ids = {entry.sd2_entry_id for entry in replaced}
         repo.sd2_entries[project_id] = [entry for entry in existing if entry.sd2_entry_id not in replaced_ids] + entries
         imported_entries += len(entries)
-    return {**result, "imported_groups": len(ready), "imported_entries": imported_entries}
+    return {**result, "imported_groups": len(ready),
+            "imported_projects": len({str(group["project_id"]) for group in ready}),
+            "imported_entries": imported_entries}
 
 
 @app.get("/api/projects/{project_id}/sd2-attachments")

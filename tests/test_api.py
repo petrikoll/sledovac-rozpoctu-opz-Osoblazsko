@@ -275,6 +275,18 @@ def test_payroll_matches_multiple_contracts_of_one_worker_to_multiple_items():
     assert all(row["match_status"] == "matched" for row in resolved)
 
 
+def test_batch_xml_description_contains_only_sd2_relevant_payroll_details():
+    from app.main import _batch_description
+
+    assert _batch_description({
+        "vacation_days": Decimal("1"), "vacation_hours": Decimal("4"),
+        "project_bonus_available": Decimal("2500"), "performance_code": "15P DP MAS",
+        "other_without_contributions": Decimal("300"), "total_fte": Decimal("0.5"),
+    }) == ("Dovolená: 1 den / 4 hod. Mimořádná odměna: 2 500,00 Kč. "
+           "Další výdaj bez odvodů: 300,00 Kč.")
+    assert _batch_description({}) == "Bez dovolené a mimořádné odměny."
+
+
 def test_editor_can_save_worker_assignments():
     project = client.post("/api/projects", json={
         "project_code": "CZ.MOSTY.WORKERS",

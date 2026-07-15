@@ -92,7 +92,7 @@ type PayrollRow = { source_key: string; page_number: number; full_name: string; 
 type PayrollPreview = { file_name: string; period: number; rows: PayrollRow[]; budget_items: { code: string; name: string }[] };
 type ProjectSchedule = { project_start_date: string | null; project_end_date: string | null; periods: { monitoring_period: number; start_month: string; end_month: string }[] };
 type PayrollBatchGroup = { performance_code: string; project_id: string | null; project_name: string; monitoring_period: number | null; months: string[]; files: string[]; rows: PayrollRow[]; issues: string[]; ready: boolean };
-type PayrollBatchResult = { groups: PayrollBatchGroup[]; unrecognized: { file_name: string; issue: string }[]; ready_groups: number; total_files: number; imported_groups?: number; imported_entries?: number };
+type PayrollBatchResult = { groups: PayrollBatchGroup[]; unrecognized: { file_name: string; issue: string }[]; ready_groups: number; total_files: number; imported_groups?: number; imported_projects?: number; imported_entries?: number };
 
 function personnelBudgetRows(rows: BudgetRow[]) {
   const candidates = rows.filter(row => row.category === "direct" && /^1\.1\.[123]\.\d+(\.|$)/.test(row.code));
@@ -356,7 +356,7 @@ function Projects() {
       const form = new FormData(); form.append("file", batchFile);
       const imported = await api<PayrollBatchResult>("/payroll-batch/import", { method: "POST", body: form });
       setBatchResult(imported);
-      setBatchNotice(`Uloženo ${imported.imported_entries || 0} záznamů do ${imported.imported_groups || 0} projektových období.`);
+      setBatchNotice(`Uloženo ${imported.imported_entries || 0} záznamů do ${imported.imported_projects || 0} projektů.`);
     } catch (error) { setBatchError(error instanceof Error ? error.message : "Rozdělené pásky se nepodařilo uložit."); }
     finally { setBatchLoading(false); }
   }

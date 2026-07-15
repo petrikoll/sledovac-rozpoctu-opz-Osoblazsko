@@ -300,6 +300,8 @@ def parse_detailed_payslip_page(text: str, page_number: int = 1) -> dict | None:
     except ValueError:
         pass
     premium = amount_after("Prémie")
+    reward_outside_average = amount_after("Odměna mimo prům.")
+    income_without_insurance = amount_after("Příjem mimo pojistné")
     payment_date = None
     try:
         signature_index = lines.index("Datum a podpis")
@@ -326,9 +328,37 @@ def parse_detailed_payslip_page(text: str, page_number: int = 1) -> dict | None:
         "vacation_hours": Decimal("0"), "vacation_days": Decimal("0"),
         "worked_hours": worked_hours, "project_hours": fund, "payment_date": payment_date,
         "employment_type": employment_type,
-        "project_bonus_available": premium, "project_bonus_label": "Prémie" if premium else "",
+        # Prémie and odměna mimo průměr are already included in gross income,
+        # therefore they are described but not added again to SD-2 corrections.
+        "project_bonus_available": premium + reward_outside_average,
+        "project_bonus_label": ", ".join(label for label, amount in (
+            ("Prémie", premium), ("Odměna mimo prům.", reward_outside_average)) if amount),
+        "other_with_contributions": Decimal("0"),
+        "other_without_contributions": income_without_insurance,
         "performance_code": performance_code,
     }
+
+
+def _detailed_vacation_from_page(page) -> tuple[Decimal, Decimal]:
+    """Read vacation days and hours from the positioned absence table."""
+    words = page.get_text("words")
+    absence_rows = [word for word in words if word[4].casefold().startswith("neodpracovan")]
+    for absence in absence_rows:
+        vacation_labels = [word for word in words
+                           if word[4].casefold().startswith("dovolen")
+                           and absence[1] < word[1] < absence[1] + 60]
+        for label in vacation_labels:
+            values = []
+            for word in words:
+                if word[0] <= label[0] + 100 or abs(word[1] - label[1]) > 2:
+                    continue
+                parsed = _line_amount(word[4])
+                if parsed is not None:
+                    values.append((word[0], parsed))
+            values.sort(key=lambda item: item[0])
+            if len(values) >= 2:
+                return values[0][1], values[1][1]
+    return Decimal("0"), Decimal("0")
 
 
 def parse_payroll_slips(data: bytes) -> list[dict]:
@@ -351,6 +381,10 @@ def parse_payroll_slips(data: bytes) -> list[dict]:
         else:
             detailed = parse_detailed_payslip_page(text, page_number)
             if detailed:
+                vacation_days, vacation_hours = _detailed_vacation_from_page(page)
+                detailed["vacation_days"] = vacation_days
+                detailed["vacation_hours"] = vacation_hours
+                detailed["project_vacation_hours"] = vacation_hours
                 rows.append(detailed)
             else:
                 rows.extend(parse_payroll_list_page(text, page_number))

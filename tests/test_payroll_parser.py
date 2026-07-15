@@ -1,6 +1,19 @@
 from decimal import Decimal
+import fitz
 
-from app.payroll_parser import parse_detailed_payslip_page, parse_payroll_list_page, parse_payroll_page
+from app.payroll_parser import (_detailed_vacation_from_page, parse_detailed_payslip_page,
+                                parse_payroll_list_page, parse_payroll_page)
+
+
+def test_detailed_payslip_reads_vacation_from_positioned_absence_table():
+    document = fitz.open()
+    page = document.new_page()
+    page.insert_text((25, 100), "Neodpracovana doba")
+    page.insert_text((35, 120), "Dovolena")
+    page.insert_text((225, 120), "1,00")
+    page.insert_text((264, 120), "4,00")
+
+    assert _detailed_vacation_from_page(page) == (Decimal("1.00"), Decimal("4.00"))
 
 
 def test_parse_payroll_page_extracts_sd2_values_without_sensitive_data():
@@ -97,7 +110,11 @@ Parametry měsíce
 176,00
 176,00
 Prémie
-0,00
+1 500,00
+Odměna mimo prům.
+500,00
+Příjem mimo pojistné
+300,00
 Datum a podpis
 07.07.2026
 Hrubý příjem
@@ -129,6 +146,10 @@ Zaměstnavatel:
     assert row["project_hours"] == Decimal("176")
     assert row["payment_date"] == "2026-07-07"
     assert row["subject_id"] == "01937324"
+    assert row["project_bonus_available"] == Decimal("2000")
+    assert row["project_bonus_label"] == "Prémie, Odměna mimo prům."
+    assert row["other_with_contributions"] == Decimal("0")
+    assert row["other_without_contributions"] == Decimal("300")
 
 
 def test_parse_osoblazsky_cech_shortened_contract():
