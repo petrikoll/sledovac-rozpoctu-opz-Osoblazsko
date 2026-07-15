@@ -506,9 +506,11 @@ function NewProject() {
 function ImportBudget({
   id,
   compact = false,
+  onImported,
 }: {
   id: string;
   compact?: boolean;
+  onImported?: (versionId: string) => void;
 }) {
   const [preview, setPreview] = useState<any>();
   const qc = useQueryClient();
@@ -523,12 +525,18 @@ function ImportBudget({
     );
   }
   async function confirm() {
-    await api(`/projects/${id}/budgets/import`, {
+    const imported = await api<{ version_id: string }>(`/projects/${id}/budgets/import`, {
       method: "POST",
       body: JSON.stringify({ token: preview.token }),
     });
     setPreview(null);
-    qc.invalidateQueries({ queryKey: ["dashboard", id] });
+    onImported?.(imported.version_id);
+    await Promise.all([
+      qc.invalidateQueries({ queryKey: ["project", id] }),
+      qc.invalidateQueries({ queryKey: ["dashboard", id] }),
+      qc.invalidateQueries({ queryKey: ["budget-versions", id] }),
+      qc.invalidateQueries({ queryKey: ["budget-status", id] }),
+    ]);
   }
   const content = (
     <>
@@ -1504,8 +1512,8 @@ function BudgetOverview({
           <button className="secondary" type="button" onClick={downloadBudgetXlsx} disabled={exportingBudget}>{exportingBudget ? "Připravuji XLSX…" : "Stáhnout čerpání XLSX"}</button>
           {me.data?.role === "admin" && (
             <>
-              <ImportBudget id={id} compact />
-              <BudgetChange id={id} compact />
+              <ImportBudget id={id} compact onImported={setSelectedVersion} />
+              <BudgetChange id={id} compact onImported={setSelectedVersion} />
               <button className="secondary budget-settings-button" type="button" title="Nastavení pracovníků v rozpočtových položkách" onClick={() => setWorkerSettingsOpen(true)}>⚙ Nastavení</button>
               {selectedVersion && <button className="danger budget-delete-version" type="button" onClick={removeSelectedVersion}>Smazat verzi</button>}
             </>
@@ -1514,14 +1522,14 @@ function BudgetOverview({
       </div>
       {deleteError && <p className="error">{deleteError}</p>}
       <div className="table-wrap">
-        <table style={{ minWidth: 1120 + Math.max(0, expandedMonthColumns.length - 1) * 90 }}>
+        <table className={expandedPeriod ? "months-expanded-table" : ""} style={{ minWidth: 1120 + Math.max(0, expandedMonthColumns.length - 1) * 105 }}>
           <thead>
             <tr>
               <th rowSpan={2}>Kód a položka</th>
               <th rowSpan={2}>Rozpočet</th>
               {periods.map((p) => {
                 const expanded = expandedPeriod === Number(p);
-                return <th className={`period-col sd2-period-button ${expanded ? "period-expanded" : ""}`} key={p} rowSpan={expanded ? 1 : 2} colSpan={expanded ? expandedMonthColumns.length : 1}>
+                return <th className={`${expanded ? "" : "period-col"} sd2-period-button ${expanded ? "period-expanded" : ""}`} key={p} rowSpan={expanded ? 1 : 2} colSpan={expanded ? expandedMonthColumns.length : 1}>
                   <span className="period-title"><button type="button" className="period-expand-button" aria-expanded={expanded} title={expanded ? `Skrýt měsíce ${p}. období` : `Zobrazit měsíce ${p}. období`} onClick={() => setExpandedPeriod(expanded ? null : Number(p))}>{expanded ? "▴" : "▾"}</button>{p}. období</span>
                   <button type="button" className="period-open-sd2" onClick={() => setSd2Period(Number(p))}>Vyplnit SD2</button>
                 </th>;
@@ -1576,9 +1584,11 @@ function BudgetOverview({
 function BudgetChange({
   id,
   compact = false,
+  onImported,
 }: {
   id: string;
   compact?: boolean;
+  onImported?: (versionId: string) => void;
 }) {
   const [preview, setPreview] = useState<any>();
   const [proposal, setProposal] = useState<any>();
@@ -1600,13 +1610,18 @@ function BudgetChange({
     }
   }
   async function activate() {
-    await api(`/projects/${id}/budget-change/import`, {
+    const imported = await api<{ version_id: string }>(`/projects/${id}/budget-change/import`, {
       method: "POST",
       body: JSON.stringify({ token: preview.token }),
     });
     setPreview(null);
-    qc.invalidateQueries({ queryKey: ["budget-status", id] });
-    qc.invalidateQueries({ queryKey: ["dashboard", id] });
+    onImported?.(imported.version_id);
+    await Promise.all([
+      qc.invalidateQueries({ queryKey: ["project", id] }),
+      qc.invalidateQueries({ queryKey: ["budget-versions", id] }),
+      qc.invalidateQueries({ queryKey: ["budget-status", id] }),
+      qc.invalidateQueries({ queryKey: ["dashboard", id] }),
+    ]);
   }
   async function generate() {
     setProposal(
@@ -1929,7 +1944,7 @@ function Dashboard() {
         </section>
       )}
       <FinalSettlement id={id} />
-      <BudgetOverview id={id} periodCount={p.data.total_monitoring_periods} projectCode={p.data.project_code} projectName={p.data.project_name} />
+      <BudgetOverview id={id} periodCount={p.data.total_monitoring_periods} activeVersionId={p.data.active_budget_version_id} projectCode={p.data.project_code} projectName={p.data.project_name} />
       <LumpSumSpending id={id} />
       <PaymentRequests id={id} />
     </main>
