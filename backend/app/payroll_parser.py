@@ -32,10 +32,10 @@ def _find_hours(text: str, label: str) -> Decimal:
 
 
 def _employment_type(category: str, month: date, gross_wage: Decimal) -> str:
-    normalized = category.upper().replace("Č", "C")
-    if normalized == "DPC":
+    normalized = category.upper().replace("Č", "C").replace(" ", "_").replace("-", "_")
+    if normalized == "DPC" or normalized.startswith("DPC_"):
         return "DPC"
-    if normalized == "DPP":
+    if normalized == "DPP" or normalized.startswith("DPP_"):
         if month.year <= 2024:
             return "DPPDo" if gross_wage <= Decimal("10000") else "DPPNad"
         return "DPP"
@@ -283,8 +283,9 @@ def parse_detailed_payslip_page(text: str, page_number: int = 1) -> dict | None:
         parameters = lines.index("Parametry měsíce")
         values = [_line_amount(line) for line in lines[parameters + 1:parameters + 4]]
         values = [value for value in values if value is not None]
-        if values:
-            fund = values[-1]
+        positive_values = [value for value in values if value > 0]
+        if positive_values:
+            fund = min(positive_values)
     except ValueError:
         pass
     worked_hours = fund

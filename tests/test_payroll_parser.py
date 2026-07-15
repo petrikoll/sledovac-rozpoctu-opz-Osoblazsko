@@ -182,3 +182,54 @@ Zaměstnavatel:
     assert row["total_fte"] == Decimal("0.4000")
     assert row["project_hours"] == Decimal("70.40")
     assert row["payment_date"] == "2026-07-07"
+
+
+def test_parse_osoblazsky_cech_dpct_under_limit():
+    text = """
+Ing.Laštov Laštovica Petr
+Pracovník
+Kategorie DPC_1
+Dohoda o pracovní činnosti - do limitu
+Měsíc Červen 2026
+Odpracovaná doba celkem
+Fond pracovní doby
+22,00
+64,00
+64,00
+0,00
+Parametry měsíce
+64,00
+176,00
+Prémie
+0,00
+Datum a podpis
+07.07.2026
+Hrubý příjem
+24 000,00
+Náklady zaměstnavatele
+32 112,00
+Hrubý příjem
+Soc. + zdr. poj. zaměstnavatele
+Spoření na stáří - zaměstnavatel
+Podíl (Čistá mzda/Náklady)
+24 000,00
+8 112,00
+0,00
+59,7 %
+Osoblažský cech, z.ú. (IČO: 01937324)
+Zaměstnavatel:
+"""
+
+    row = parse_detailed_payslip_page(text)
+
+    assert row is not None
+    assert row["first_name"] == "Petr"
+    assert row["last_name"] == "Laštovica"
+    assert row["category"] == "DPC_1"
+    assert row["employment_type"] == "DPC"
+    assert row["gross_wage"] == Decimal("24000")
+    assert row["employer_contributions"] == Decimal("8112")
+    assert row["work_time_fund"] == Decimal("64")
+    assert row["full_time_fund"] == Decimal("176")
+    assert row["project_hours"] == Decimal("64")
+    assert row["payment_date"] == "2026-07-07"
