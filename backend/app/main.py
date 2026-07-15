@@ -690,6 +690,17 @@ def resolve_payroll_rows(selected_project: Project, rows: list[dict]) -> tuple[l
     allowed = {item.code for item in items}
     if normalized_name(selected_project.project_name) == normalized_name("Mosty v rodině"):
         return _mosty_payroll_rows(rows, allowed), items
+    contracts_by_person: dict[str, set[str]] = defaultdict(set)
+    for row in rows:
+        person = normalized_name(f'{row.get("first_name", "")} {row.get("last_name", "")}')
+        contract = normalized_name(str(row.get("contract_name", "")))
+        if person and contract:
+            contracts_by_person[person].add(contract)
+
+    def natural_key(value: str) -> tuple:
+        return tuple(int(part) if part.isdigit() else part
+                     for part in re.split(r"(\d+)", normalized_name(value)))
+
     resolved_rows = []
     is_osoblazsky_cech = normalized_name(selected_project.recipient_name) == normalized_name("Osoblažský cech, z.ú.")
     for row in rows:
@@ -701,6 +712,17 @@ def resolve_payroll_rows(selected_project: Project, rows: list[dict]) -> tuple[l
         exact = [rule for rule in candidates if str(rule.get("payroll_component_amount") or "").strip() and Decimal(str(rule["payroll_component_amount"])) == amount]
         without_amount = [rule for rule in candidates if not str(rule.get("payroll_component_amount") or "").strip()]
         matched_rule = exact[0] if len(exact) == 1 else (without_amount[0] if not exact and len(without_amount) == 1 and len(candidates) == 1 else None)
+        if not matched_rule and contract_name:
+            # One worker can have several separate employment relations in the same
+            # project (for example 2PP and 3PP) and each relation belongs to a
+            # different budget item. If Settings contains the same number of
+            # distinct items as the payslips contain relations, pair both stable
+            # sequences. Explicit contract/amount rules above still take priority.
+            unique_rules = {str(rule["budget_item_code"]): rule for rule in candidates}
+            worker_contracts = sorted(contracts_by_person.get(parsed_name, set()), key=natural_key)
+            worker_rules = sorted(unique_rules.values(), key=lambda rule: natural_key(str(rule["budget_item_code"])))
+            if len(worker_contracts) == len(worker_rules) and len(worker_rules) > 1 and contract_name in worker_contracts:
+                matched_rule = worker_rules[worker_contracts.index(contract_name)]
         matched = str(matched_rule["budget_item_code"]) if matched_rule else ""
         row["budget_item_code"] = matched if matched in allowed else ""
         row["match_status"] = "matched" if row["budget_item_code"] else "unmatched"

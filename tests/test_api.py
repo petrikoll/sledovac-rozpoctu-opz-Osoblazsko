@@ -234,6 +234,47 @@ def test_batch_payroll_zip_routes_and_replaces_same_worker(monkeypatch):
     assert saved[0].gross_wage == Decimal("42000")
 
 
+def test_payroll_matches_multiple_contracts_of_one_worker_to_multiple_items():
+    from app.main import resolve_payroll_rows
+
+    project = client.post("/api/projects", json={
+        "project_code": "CZ.MULTI.CONTRACT",
+        "project_name": "Řešení zaměstnanosti a zaměstnatelnosti osob na Osoblažsku 2026+",
+        "recipient_name": "Osoblažský cech, z.ú.",
+    }).json()
+    project_id = project["project_id"]
+    repo.project_data[project_id].active_budget_version_id = "multi-contract-budget"
+    items = [
+        BudgetItem(code="1.1.1.1", name="Pracovní poradce", level=4, category="direct",
+                   is_leaf=True, total_amount=Decimal("100000"), source_row_number=1),
+        BudgetItem(code="1.1.1.2", name="Dluhový poradce", level=4, category="direct",
+                   is_leaf=True, total_amount=Decimal("100000"), source_row_number=2),
+    ]
+    repo.budgets[project_id] = [{"version_id": "multi-contract-budget", "analysis": BudgetAnalysis(
+        sha256="multi-contract", file_name="budget.xlsx", items=items,
+        total_amount=Decimal("200000"), lump_sum_rate=Decimal("0.4"),
+        lump_sum_base_code="1.1", leaf_count=2, summary_count=0)}]
+    repo.worker_assignments[project_id] = [
+        {"employee_name": "Jana Sulková", "budget_item_code": "1.1.1.1"},
+        {"employee_name": "Jana Sulková", "budget_item_code": "1.1.1.2"},
+    ]
+    base = {
+        "full_name": "Sulková Jana", "first_name": "Jana", "last_name": "Sulková",
+        "month": "2026-03-01", "component_amount": Decimal("12000"),
+        "gross_wage": Decimal("12000"), "work_time_fund": Decimal("44"),
+        "total_fte": Decimal("0.25"),
+    }
+
+    resolved, _ = resolve_payroll_rows(repo.project_data[project_id], [
+        {**base, "source_key": "jana-2pp", "contract_name": "2PP"},
+        {**base, "source_key": "jana-3pp", "contract_name": "3PP"},
+    ])
+
+    assert [(row["contract_name"], row["budget_item_code"]) for row in resolved] == [
+        ("2PP", "1.1.1.1"), ("3PP", "1.1.1.2")]
+    assert all(row["match_status"] == "matched" for row in resolved)
+
+
 def test_editor_can_save_worker_assignments():
     project = client.post("/api/projects", json={
         "project_code": "CZ.MOSTY.WORKERS",

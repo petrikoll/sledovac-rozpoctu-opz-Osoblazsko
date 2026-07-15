@@ -368,7 +368,7 @@ function Projects() {
         </Link>
       </div>
       {me.data && ["admin", "editor"].includes(me.data.role) && <section className="panel payroll-batch-panel">
-        <div className="payroll-batch-head"><div><small>HROMADNÝ IMPORT</small><h2>Rozdělit výplatní pásky mezi projekty</h2><p>Nahrajte jeden ZIP. Aplikace rozdělí PDF podle pole Výkon, určí projekt, měsíc a monitorovací období.</p></div><label className="upload-button">{batchLoading ? "Zpracovávám…" : "Vybrat ZIP"}<input type="file" accept=".zip,application/zip" disabled={batchLoading} onChange={event => event.target.files?.[0] && analyzeBatch(event.target.files[0])} /></label></div>
+        <div className="payroll-batch-head"><div><small>HROMADNÝ IMPORT</small><h2>Rozdělit výplatní pásky mezi projekty – určeno pro Osoblažský cech, z.ú.</h2><p>Nahrajte jeden ZIP. Aplikace rozdělí PDF podle pole Výkon, určí projekt, měsíc a monitorovací období.</p></div><label className="upload-button">{batchLoading ? "Zpracovávám…" : "Vybrat ZIP"}<input type="file" accept=".zip,application/zip" disabled={batchLoading} onChange={event => event.target.files?.[0] && analyzeBatch(event.target.files[0])} /></label></div>
         {batchFile && <p className="payroll-batch-file"><b>{batchFile.name}</b> · {batchResult ? `${batchResult.total_files} souborů` : "čeká na kontrolu"}</p>}
         {batchError && <div className="alert">{batchError}</div>}
         {batchNotice && <div className="info">{batchNotice}</div>}
