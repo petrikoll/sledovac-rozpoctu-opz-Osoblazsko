@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from datetime import date, datetime
 from decimal import Decimal
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from functools import wraps
 from typing import Any
 
 from google.oauth2 import service_account
@@ -35,6 +37,15 @@ SHEETS = {
     "NAVRHY_ZMEN_RADKY": ["proposal_line_id", "proposal_id", "source_item_code", "target_item_code", "amount", "reason", "source_available_before", "source_available_after", "target_balance_before", "target_balance_after"],
     "IMPORT_LOG": ["import_id", "project_id", "import_type", "source_file_name", "source_sha256", "status", "error_code", "message", "created_at", "created_by"],
 }
+
+
+def synchronized_google_call(method):
+    """Serialize access to googleapiclient's shared, non-thread-safe HTTP client."""
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._google_lock:
+            return method(self, *args, **kwargs)
+    return wrapper
 
 
 class Repository(ABC):
@@ -69,7 +80,9 @@ class GoogleSheetsRepository(Repository):
         creds = service_account.Credentials.from_service_account_info(info, scopes=["https://www.googleapis.com/auth/spreadsheets"])
         self.api = build("sheets", "v4", credentials=creds, cache_discovery=False).spreadsheets()
         self.id = spreadsheet_id
+        self._google_lock = threading.RLock()
 
+    @synchronized_google_call
     def ensure_schema(self):
         metadata = self.api.get(spreadsheetId=self.id).execute()
         existing = {s["properties"]["title"] for s in metadata.get("sheets", [])}
@@ -79,10 +92,12 @@ class GoogleSheetsRepository(Repository):
         body = {"valueInputOption": "RAW", "data": [{"range": f"'{name}'!A1", "values": [headers]} for name, headers in SHEETS.items()]}
         self.api.values().batchUpdate(spreadsheetId=self.id, body=body).execute()
 
+    @synchronized_google_call
     def projects(self):
         values = self.api.values().get(spreadsheetId=self.id, range="PROJEKTY!A2:O").execute().get("values", [])
         return [Project(**dict(zip(SHEETS["PROJEKTY"], row))) for row in values]
 
+    @synchronized_google_call
     def save_project(self, project):
         values = [[str(getattr(project, key, "")) for key in SHEETS["PROJEKTY"]]]
         self.api.values().append(spreadsheetId=self.id, range="PROJEKTY!A:O", valueInputOption="RAW", body={"values": values}).execute()
@@ -103,12 +118,14 @@ class GoogleSheetsRepository(Repository):
             result = chr(65 + remainder) + result
         return result
 
+    @synchronized_google_call
     def append_records(self, sheet: str, records: list[dict[str, Any]]) -> None:
         if not records: return
         rows = [[self._scalar(record.get(column, "")) for column in SHEETS[sheet]] for record in records]
         self.api.values().append(spreadsheetId=self.id, range=f"'{sheet}'!A:{'AZ'}", valueInputOption="RAW",
                                  insertDataOption="INSERT_ROWS", body={"values": rows}).execute()
 
+    @synchronized_google_call
     def update_record(self, sheet: str, key: str, key_value: str, changes: dict[str, Any]) -> None:
         headers = SHEETS[sheet]; key_col = headers.index(key)
         rows = self.api.values().get(spreadsheetId=self.id, range=f"'{sheet}'!A2:AZ").execute().get("values", [])
@@ -120,6 +137,7 @@ class GoogleSheetsRepository(Repository):
                 return
         raise ValueError(f"Záznam {key_value} v listu {sheet} nebyl nalezen.")
 
+    @synchronized_google_call
     def delete_record(self, sheet: str, key: str, key_value: str) -> None:
         metadata = self.api.get(spreadsheetId=self.id).execute()
         sheet_id = next(s["properties"]["sheetId"] for s in metadata["sheets"] if s["properties"]["title"] == sheet)
@@ -132,6 +150,7 @@ class GoogleSheetsRepository(Repository):
                 return
         raise ValueError(f"Záznam {key_value} v listu {sheet} nebyl nalezen.")
 
+    @synchronized_google_call
     def delete_records(self, sheet: str, key: str, key_value: str) -> int:
         """Smaže všechny odpovídající řádky; maže odzadu, aby se neposouvala čísla řádků."""
         metadata = self.api.get(spreadsheetId=self.id).execute()
@@ -146,6 +165,7 @@ class GoogleSheetsRepository(Repository):
             self.api.batchUpdate(spreadsheetId=self.id, body={"requests": requests}).execute()
         return len(row_numbers)
 
+    @synchronized_google_call
     def _records(self, sheet: str) -> list[dict[str, Any]]:
         headers = SHEETS[sheet]
         end = chr(64 + len(headers)) if len(headers) <= 26 else "AZ"
