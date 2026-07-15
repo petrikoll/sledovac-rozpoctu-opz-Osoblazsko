@@ -1063,7 +1063,7 @@ function Sd2MonthlyDialogNew({ id, period, projectCode, projectName, onClose }: 
   const { data: attachments = [] } = useQuery({ queryKey: ["sd2-attachments", id, period], queryFn: () => api<any[]>(`/projects/${id}/sd2-attachments?period=${period}`) });
   const { data: budgetRows = [] } = useQuery({ queryKey: ["budget-status", id], queryFn: () => api<BudgetRow[]>(`/projects/${id}/budget-status`) });
   const { data: projectSchedule } = useQuery({ queryKey: ["project-schedule", id], queryFn: () => api<ProjectSchedule>(`/projects/${id}/schedule`) });
-  const [changes, setChanges] = useState<Record<string, string | number>>({}); const [saving, setSaving] = useState(false); const [error, setError] = useState(""); const [driveToken, setDriveToken] = useState(""); const [uploading, setUploading] = useState(false); const [uploadNotice, setUploadNotice] = useState(""); const [xmlDetails, setXmlDetails] = useState(false); const [defaultSubjectId, setDefaultSubjectId] = useState(""); const [extraMonths, setExtraMonths] = useState<string[]>([]); const [payrollPreview, setPayrollPreview] = useState<PayrollPreview | null>(null); const [payrollMapping, setPayrollMapping] = useState<Record<number, string>>({}); const [payrollProjectHours, setPayrollProjectHours] = useState<Record<number, string>>({}); const [payrollBonusMode, setPayrollBonusMode] = useState<Record<number, "exclude" | "all" | "partial">>({}); const [payrollBonusAmount, setPayrollBonusAmount] = useState<Record<number, string>>({}); const [analyzingPayroll, setAnalyzingPayroll] = useState(false);
+  const [changes, setChanges] = useState<Record<string, string | number>>({}); const [saving, setSaving] = useState(false); const [error, setError] = useState(""); const [driveToken, setDriveToken] = useState(""); const [uploading, setUploading] = useState(false); const [uploadNotice, setUploadNotice] = useState(""); const [xmlDetails, setXmlDetails] = useState(false); const [defaultSubjectId, setDefaultSubjectId] = useState(""); const [extraMonths, setExtraMonths] = useState<string[]>([]); const [payrollPreview, setPayrollPreview] = useState<PayrollPreview | null>(null); const [payrollEntries, setPayrollEntries] = useState<Sd2Entry[] | null>(null); const [payrollMapping, setPayrollMapping] = useState<Record<number, string>>({}); const [payrollProjectHours, setPayrollProjectHours] = useState<Record<number, string>>({}); const [payrollBonusMode, setPayrollBonusMode] = useState<Record<number, "exclude" | "all" | "partial">>({}); const [payrollBonusAmount, setPayrollBonusAmount] = useState<Record<number, string>>({}); const [analyzingPayroll, setAnalyzingPayroll] = useState(false);
   const scheduledPeriod = projectSchedule?.periods.find(item => item.monitoring_period === period);
   const configuredMonths = scheduledPeriod ? monthsInRange(scheduledPeriod.start_month, scheduledPeriod.end_month) : projectCode === SD2_PROJECT_CODE ? (SD2_MONTHS[period - 1] || []) : [];
   const months = Array.from(new Set([...configuredMonths, ...data.map(entry => entry.month), ...extraMonths])).sort();
@@ -1072,10 +1072,10 @@ function Sd2MonthlyDialogNew({ id, period, projectCode, projectName, onClose }: 
   const sd2Names = Object.fromEntries(sd2Rows.map(row => [row.code, row.name]));
   useEffect(() => { const savedSubjectId = data.find(entry => entry.subject_id)?.subject_id; if (savedSubjectId) setDefaultSubjectId(savedSubjectId); }, [data]);
   const numericFields = new Set<keyof Sd2Entry>(["gross_wage", "employer_contributions", "other_with_contributions", "other_without_contributions", "work_time_fund", "project_hours"]);
-  const read = (code: string, month: string, field: keyof Sd2Entry) => changes[`${code}|${month}|${field}`] ?? data.find(x => x.budget_item_code === code && x.month === month)?.[field] ?? (numericFields.has(field) ? 0 : "");
+  const read = (code: string, month: string, field: keyof Sd2Entry) => { const changed = changes[`${code}|${month}|${field}`]; if (changed != null) return changed; const matching = (payrollEntries || data).filter(x => x.budget_item_code === code && x.month === month); if (numericFields.has(field)) return matching.reduce((sum, entry) => sum + Number(entry[field] || 0), 0); return matching[0]?.[field] ?? ""; };
   const set = (code: string, month: string, field: keyof Sd2Entry, value: string) => setChanges(current => ({ ...current, [`${code}|${month}|${field}`]: value }));
   const employmentFor = (code: string) => code.startsWith("1.1.2.") ? "DPC" : code.startsWith("1.1.3.") ? "DPP" : "Smlouva";
-  const makeEntries = (): Sd2Entry[] => sd2Codes.flatMap(code => months.map(month => {
+  const makeEntries = (): Sd2Entry[] => payrollEntries || sd2Codes.flatMap(code => months.map(month => {
     const old = data.find(x => x.budget_item_code === code && x.month === month);
     return {
       sd2_entry_id: old?.sd2_entry_id, monitoring_period: period, month, budget_item_code: code,
@@ -1155,10 +1155,23 @@ function Sd2MonthlyDialogNew({ id, period, projectCode, projectName, onClose }: 
       return !Number.isFinite(amount) || amount < 0 || amount > Number(row.project_bonus_available || 0);
     });
     if (invalidBonus) { setError("Část projektové prémie musí být mezi 0 Kč a nalezenou částkou prémie."); return; }
-    const peopleByKey = new Map<string, Set<string>>();
-    included.forEach(({ row, code }) => { const key = `${code}|${row.month}`; const people = peopleByKey.get(key) || new Set<string>(); people.add(`${row.first_name}|${row.last_name}`); peopleByKey.set(key, people); });
-    if ([...peopleByKey.values()].some(people => people.size > 1)) { setError("Dva různí pracovníci jsou přiřazeni ke stejné položce a měsíci. Pro XML SD-2 potřebují samostatné rozpočtové položky."); return; }
     setExtraMonths(current => Array.from(new Set([...current, ...included.map(item => item.row.month)])));
+    const replacedKeys = new Set(included.map(item => `${item.code}|${item.row.month}`));
+    const individualEntries = included.map(({ row, index, code }): Sd2Entry => {
+      const projectHours = Number(payrollProjectHours[index] ?? row.project_hours ?? row.worked_hours) || 0;
+      const projectBonus = selectedProjectBonus(row, index);
+      return {
+        monitoring_period: period, month: row.month, budget_item_code: code,
+        gross_wage: Number(row.gross_wage),
+        employer_contributions: Number(row.employer_contributions) + projectBonus * Number(row.employer_contribution_rate ?? 0.338),
+        other_with_contributions: Number(row.other_with_contributions || 0) + projectBonus,
+        other_without_contributions: 0, payment_date: row.payment_date || null,
+        subject_id: row.subject_id || defaultSubjectId, first_name: row.first_name, last_name: row.last_name,
+        employment_type: row.employment_type || employmentFor(code), work_time_fund: Number(row.work_time_fund),
+        project_hours: projectHours, description: payrollDescription(row, index, projectHours),
+      };
+    });
+    setPayrollEntries(current => [...(current || data).filter(entry => !replacedKeys.has(`${entry.budget_item_code}|${entry.month}`)), ...individualEntries]);
     setChanges(current => {
       const next = { ...current };
       const grouped = new Map<string, { row: PayrollRow; gross: number; contributions: number; correction: number; fund: number; projectHours: number; paymentDate: string; description: string }>();

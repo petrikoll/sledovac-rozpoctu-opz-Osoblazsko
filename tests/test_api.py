@@ -212,6 +212,26 @@ def test_delete_sd2_period_keeps_other_periods():
     assert [entry["monitoring_period"] for entry in repo.sd2_attachments[project_id]] == [2]
 
 
+def test_sd2_keeps_multiple_workers_in_same_budget_item_and_month():
+    project = client.post("/api/projects", json={"project_code": "CZ.MULTI", "project_name": "Více pracovníků", "recipient_name": "P"}).json()
+    project_id = project["project_id"]
+    from app.main import sd2_budget_items
+    from app.models import BudgetItem
+    original = sd2_budget_items
+    import app.main as main_module
+    main_module.sd2_budget_items = lambda _: [BudgetItem(code="1.1.1.1", name="Pracovníci", level=4, total_amount=100000, category="direct", is_leaf=True, source_row_number=1)]
+    try:
+        response = client.put(f"/api/projects/{project_id}/sd2-monthly", json={"entries": [
+            {"monitoring_period": 1, "month": "2026-06-01", "budget_item_code": "1.1.1.1", "first_name": "Jana", "last_name": "První", "gross_wage": 20000},
+            {"monitoring_period": 1, "month": "2026-06-01", "budget_item_code": "1.1.1.1", "first_name": "Petr", "last_name": "Druhý", "gross_wage": 25000},
+        ]})
+    finally:
+        main_module.sd2_budget_items = original
+
+    assert response.status_code == 200
+    assert [(item["first_name"], item["gross_wage"]) for item in response.json()] == [("Jana", "20000"), ("Petr", "25000")]
+
+
 def test_sd2_xml_download_does_not_save_entries(monkeypatch):
     project = client.post("/api/projects", json={"project_code": "CZ.XML", "project_name": "XML", "recipient_name": "P"}).json()
     project_id = project["project_id"]

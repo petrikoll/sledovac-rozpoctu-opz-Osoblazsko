@@ -591,13 +591,11 @@ def save_sd2_monthly(project_id: str, body: dict, user=Depends(require_editor)):
     period = entries[0].monitoring_period
     if any(entry.monitoring_period != period for entry in entries): raise HTTPException(422, "Uložte najednou pouze jedno období.")
     existing = repo.sd2_entries[project_id]
-    index = {(x.monitoring_period, x.month, x.budget_item_code): i for i, x in enumerate(existing)}
+    index = {x.sd2_entry_id: i for i, x in enumerate(existing)}
     appended = []
     for entry in entries:
-        key = (entry.monitoring_period, entry.month, entry.budget_item_code)
-        if key in index:
-            entry.sd2_entry_id = existing[index[key]].sd2_entry_id
-            existing[index[key]] = entry
+        if entry.sd2_entry_id in index:
+            existing[index[entry.sd2_entry_id]] = entry
             if google_repo: google_repo.update_record("SD2_MESICE", "sd2_entry_id", entry.sd2_entry_id, entry.model_dump())
         else:
             existing.append(entry); appended.append(entry)
