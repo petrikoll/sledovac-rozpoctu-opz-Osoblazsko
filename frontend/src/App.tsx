@@ -91,6 +91,8 @@ type WorkerRule = { employee_name: string; project_fte: string; payroll_componen
 type PayrollRow = { source_key: string; page_number: number; full_name: string; last_name: string; first_name: string; subject_id?: string; category: string; contract_name?: string; position_name?: string; component_code?: string; component_name?: string; component_description?: string; component_amount?: number; other_with_contributions?: number; project_bonus_available?: number; project_bonus_label?: string; employer_contribution_rate?: number; total_fte?: number; vacation_days?: number; vacation_hours?: number; project_vacation_hours?: number; month: string; payment_date?: string | null; gross_wage: number; employer_contributions: number; work_time_fund: number; worked_hours: number; project_hours?: number; project_fte?: number; employment_type: Sd2Entry["employment_type"]; budget_item_code: string; match_status: "matched" | "unmatched" | "ignored" };
 type PayrollPreview = { file_name: string; period: number; rows: PayrollRow[]; budget_items: { code: string; name: string }[] };
 type ProjectSchedule = { project_start_date: string | null; project_end_date: string | null; periods: { monitoring_period: number; start_month: string; end_month: string }[] };
+type PayrollBatchGroup = { performance_code: string; project_id: string | null; project_name: string; monitoring_period: number | null; months: string[]; files: string[]; rows: PayrollRow[]; issues: string[]; ready: boolean };
+type PayrollBatchResult = { groups: PayrollBatchGroup[]; unrecognized: { file_name: string; issue: string }[]; ready_groups: number; total_files: number; imported_groups?: number; imported_entries?: number };
 
 function personnelBudgetRows(rows: BudgetRow[]) {
   const candidates = rows.filter(row => row.category === "direct" && /^1\.1\.[123]\.\d+(\.|$)/.test(row.code));
@@ -325,6 +327,7 @@ function InfoTip({ text }: { text: string }) {
   );
 }
 function Projects() {
+  const me = useQuery({ queryKey: ["me"], queryFn: () => api<CurrentUser>("/me") });
   const {
     data = [],
     isLoading,
@@ -333,6 +336,30 @@ function Projects() {
     queryKey: ["projects"],
     queryFn: () => api<Project[]>("/projects"),
   });
+  const [batchFile, setBatchFile] = useState<File | null>(null);
+  const [batchResult, setBatchResult] = useState<PayrollBatchResult | null>(null);
+  const [batchError, setBatchError] = useState("");
+  const [batchLoading, setBatchLoading] = useState(false);
+  const [batchNotice, setBatchNotice] = useState("");
+  async function analyzeBatch(file: File) {
+    setBatchFile(file); setBatchResult(null); setBatchError(""); setBatchNotice(""); setBatchLoading(true);
+    try {
+      const form = new FormData(); form.append("file", file);
+      setBatchResult(await api<PayrollBatchResult>("/payroll-batch/analyze", { method: "POST", body: form }));
+    } catch (error) { setBatchError(error instanceof Error ? error.message : "ZIP se nepodařilo zkontrolovat."); }
+    finally { setBatchLoading(false); }
+  }
+  async function importBatch() {
+    if (!batchFile || !batchResult?.ready_groups) return;
+    setBatchError(""); setBatchNotice(""); setBatchLoading(true);
+    try {
+      const form = new FormData(); form.append("file", batchFile);
+      const imported = await api<PayrollBatchResult>("/payroll-batch/import", { method: "POST", body: form });
+      setBatchResult(imported);
+      setBatchNotice(`Uloženo ${imported.imported_entries || 0} záznamů do ${imported.imported_groups || 0} projektových období.`);
+    } catch (error) { setBatchError(error instanceof Error ? error.message : "Rozdělené pásky se nepodařilo uložit."); }
+    finally { setBatchLoading(false); }
+  }
   return (
     <main>
       <div className="project-create">
@@ -340,6 +367,22 @@ function Projects() {
           + Založit projekt
         </Link>
       </div>
+      {me.data && ["admin", "editor"].includes(me.data.role) && <section className="panel payroll-batch-panel">
+        <div className="payroll-batch-head"><div><small>HROMADNÝ IMPORT</small><h2>Rozdělit výplatní pásky mezi projekty</h2><p>Nahrajte jeden ZIP. Aplikace rozdělí PDF podle pole Výkon, určí projekt, měsíc a monitorovací období.</p></div><label className="upload-button">{batchLoading ? "Zpracovávám…" : "Vybrat ZIP"}<input type="file" accept=".zip,application/zip" disabled={batchLoading} onChange={event => event.target.files?.[0] && analyzeBatch(event.target.files[0])} /></label></div>
+        {batchFile && <p className="payroll-batch-file"><b>{batchFile.name}</b> · {batchResult ? `${batchResult.total_files} souborů` : "čeká na kontrolu"}</p>}
+        {batchError && <div className="alert">{batchError}</div>}
+        {batchNotice && <div className="info">{batchNotice}</div>}
+        {batchResult && <div className="payroll-batch-groups">
+          {batchResult.groups.map((group, index) => <article className={group.ready ? "ready" : "blocked"} key={`${group.performance_code}-${group.project_id || index}-${group.monitoring_period}`}>
+            <div><small>VÝKON {group.performance_code || "NEURČEN"}</small><h3>{group.project_name}</h3><p>{group.months.map(monthLabel).join(", ")} · {group.monitoring_period ? `${group.monitoring_period}. období` : "období neurčeno"} · {group.files.length} PDF</p></div>
+            <strong>{group.ready ? "Připraveno" : "Vyžaduje opravu"}</strong>
+            {group.issues.length > 0 && <ul>{group.issues.map(issue => <li key={issue}>{issue}</li>)}</ul>}
+            {group.project_id && <Link to={`/projekty/${group.project_id}`}>Otevřít projekt</Link>}
+          </article>)}
+          {batchResult.unrecognized.map(item => <article className="blocked" key={item.file_name}><div><small>NEROZPOZNÁNO</small><h3>{item.file_name}</h3><p>{item.issue}</p></div><strong>Neuloží se</strong></article>)}
+        </div>}
+        {batchResult && <div className="payroll-batch-actions"><span>{batchResult.ready_groups} skupin připraveno k uložení. Skupiny s problémem se neuloží.</span><button type="button" disabled={!batchResult.ready_groups || batchLoading} onClick={importBatch}>{batchLoading ? "Ukládám…" : "Uložit rozpoznané pásky"}</button></div>}
+      </section>}
       {isLoading ? (
         <p>Načítám…</p>
       ) : error ? (

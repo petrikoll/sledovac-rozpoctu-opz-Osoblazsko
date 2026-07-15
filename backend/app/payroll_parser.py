@@ -257,6 +257,8 @@ def parse_detailed_payslip_page(text: str, page_number: int = 1) -> dict | None:
     last_name, first_name = _split_name(full_name)
     category_line = next(line for line in lines if line.startswith("Kategorie "))
     category = category_line.removeprefix("Kategorie ").strip()
+    performance_line = next((line for line in lines if line.startswith("Výkon ")), "")
+    performance_code = re.sub(r"\s+Zakázka$", "", performance_line.removeprefix("Výkon ").strip()).strip()
 
     def amount_after(label: str, occurrence: int = 1) -> Decimal:
         indices = [index for index, line in enumerate(lines) if line == label]
@@ -325,6 +327,7 @@ def parse_detailed_payslip_page(text: str, page_number: int = 1) -> dict | None:
         "worked_hours": worked_hours, "project_hours": fund, "payment_date": payment_date,
         "employment_type": employment_type,
         "project_bonus_available": premium, "project_bonus_label": "Prémie" if premium else "",
+        "performance_code": performance_code,
     }
 
 

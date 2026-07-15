@@ -4,6 +4,7 @@ import hashlib
 import os
 import re
 import unicodedata
+import zipfile
 from collections import defaultdict
 from contextvars import ContextVar
 from datetime import date, datetime
@@ -666,6 +667,57 @@ def create_sd2_xml(project_id: str, period: int, body: dict, user=Depends(curren
     return StreamingResponse(BytesIO(content), media_type="application/xml; charset=utf-8", headers=headers)
 
 
+def resolve_payroll_rows(selected_project: Project, rows: list[dict]) -> tuple[list[dict], list]:
+    """Match parsed payroll relations to the current project's leaf personnel items."""
+    assignments = repo.worker_assignments[selected_project.project_id]
+    assignment_rules: dict[str, list[dict]] = defaultdict(list)
+    for assignment in assignments:
+        stored_name = str(assignment.get("employee_name", "")).strip()
+        names = re.split(r"[,;\n]+", stored_name or str(assignment.get("employee_names", "")))
+        for name in names:
+            if name.strip():
+                rule = {
+                    "budget_item_code": str(assignment.get("budget_item_code", "")),
+                    "project_fte": assignment.get("project_fte"),
+                    "payroll_component_amount": assignment.get("payroll_component_amount"),
+                    "contract_contains": str(assignment.get("contract_contains", "")).strip(),
+                }
+                assignment_rules[normalized_name(name)].append(rule)
+                reversed_name = normalized_name(" ".join(reversed(name.strip().split())))
+                if reversed_name != normalized_name(name):
+                    assignment_rules[reversed_name].append(rule)
+    items = sd2_budget_items(selected_project.project_id)
+    allowed = {item.code for item in items}
+    if normalized_name(selected_project.project_name) == normalized_name("Mosty v rodině"):
+        return _mosty_payroll_rows(rows, allowed), items
+    resolved_rows = []
+    is_osoblazsky_cech = normalized_name(selected_project.recipient_name) == normalized_name("Osoblažský cech, z.ú.")
+    for row in rows:
+        parsed_name = normalized_name(f'{row.get("first_name", "")} {row.get("last_name", "")}')
+        candidates = assignment_rules.get(parsed_name, assignment_rules.get(normalized_name(row["full_name"]), []))
+        contract_name = normalized_name(str(row.get("contract_name", "")))
+        candidates = [rule for rule in candidates if not rule["contract_contains"] or normalized_name(rule["contract_contains"]) in contract_name]
+        amount = Decimal(str(row.get("component_amount", row.get("gross_wage", 0))))
+        exact = [rule for rule in candidates if str(rule.get("payroll_component_amount") or "").strip() and Decimal(str(rule["payroll_component_amount"])) == amount]
+        without_amount = [rule for rule in candidates if not str(rule.get("payroll_component_amount") or "").strip()]
+        matched_rule = exact[0] if len(exact) == 1 else (without_amount[0] if not exact and len(without_amount) == 1 and len(candidates) == 1 else None)
+        matched = str(matched_rule["budget_item_code"]) if matched_rule else ""
+        row["budget_item_code"] = matched if matched in allowed else ""
+        row["match_status"] = "matched" if row["budget_item_code"] else "unmatched"
+        if matched_rule and str(matched_rule.get("project_fte") or "").strip():
+            fte = Decimal(str(matched_rule["project_fte"]))
+            row["project_fte"] = fte
+            if is_osoblazsky_cech:
+                row["project_hours"] = Decimal(str(row.get("work_time_fund", 0))).quantize(Decimal("0.01"))
+                detected = Decimal(str(row.get("total_fte", 0)))
+                if detected and abs(detected - fte) > Decimal("0.01"):
+                    row["component_description"] = f"Pozor: nastavený úvazek {fte} neodpovídá úvazku {detected} odvozenému z pásky."
+            else:
+                row["project_hours"] = (Decimal(str(row.get("work_time_fund", 0))) * fte).quantize(Decimal("0.01"))
+        resolved_rows.append(row)
+    return resolved_rows, items
+
+
 @app.post("/api/projects/{project_id}/payroll-slips/analyze")
 async def analyze_payroll_slips(project_id: str, period: int, files: list[UploadFile] = File(...), user=Depends(require_editor)):
     selected_project = project(project_id, user)
@@ -695,59 +747,179 @@ async def analyze_payroll_slips(project_id: str, period: int, files: list[Upload
             full_fund = Decimal(str(row.get("full_time_fund", 0)))
             daily_hours = fund / (full_fund / Decimal("8")) if fund and full_fund else Decimal("0")
             row["vacation_days"] = (Decimal(str(row["vacation_hours"])) / daily_hours).quantize(Decimal("0.01")) if daily_hours else Decimal("0")
-    assignments = repo.worker_assignments[project_id]
-    assignment_rules: dict[str, list[dict]] = defaultdict(list)
-    for assignment in assignments:
-        stored_name = str(assignment.get("employee_name", "")).strip()
-        names = re.split(r"[,;\n]+", stored_name or str(assignment.get("employee_names", "")))
-        for name in names:
-            if name.strip():
-                rule = {
-                    "budget_item_code": str(assignment.get("budget_item_code", "")),
-                    "project_fte": assignment.get("project_fte"),
-                    "payroll_component_amount": assignment.get("payroll_component_amount"),
-                    "contract_contains": str(assignment.get("contract_contains", "")).strip(),
-                }
-                assignment_rules[normalized_name(name)].append(rule)
-                reversed_name = normalized_name(" ".join(reversed(name.strip().split())))
-                if reversed_name != normalized_name(name):
-                    assignment_rules[reversed_name].append(rule)
-    items = sd2_budget_items(project_id)
-    allowed = {item.code for item in items}
-    if normalized_name(selected_project.project_name) == normalized_name("Mosty v rodině"):
-        rows = _mosty_payroll_rows(rows, allowed)
-        return {"period": period, "file_name": ", ".join(file_names), "rows": rows,
-                "budget_items": [{"code": item.code, "name": item.name} for item in items]}
-    resolved_rows = []
-    is_osoblazsky_cech = normalized_name(selected_project.recipient_name) == normalized_name("Osoblažský cech, z.ú.")
-    for row in rows:
-        parsed_name = normalized_name(f'{row.get("first_name", "")} {row.get("last_name", "")}')
-        candidates = assignment_rules.get(parsed_name, assignment_rules.get(normalized_name(row["full_name"]), []))
-        contract_name = normalized_name(str(row.get("contract_name", "")))
-        candidates = [rule for rule in candidates if not rule["contract_contains"] or normalized_name(rule["contract_contains"]) in contract_name]
-        amount = Decimal(str(row.get("component_amount", row.get("gross_wage", 0))))
-        exact = [rule for rule in candidates if str(rule.get("payroll_component_amount") or "").strip() and Decimal(str(rule["payroll_component_amount"])) == amount]
-        without_amount = [rule for rule in candidates if not str(rule.get("payroll_component_amount") or "").strip()]
-        matched_rule = exact[0] if len(exact) == 1 else (without_amount[0] if not exact and len(without_amount) == 1 and len(candidates) == 1 else None)
-        matched = str(matched_rule["budget_item_code"]) if matched_rule else ""
-        row["budget_item_code"] = matched if matched in allowed else ""
-        row["match_status"] = "matched" if row["budget_item_code"] else "unmatched"
-        if matched_rule and str(matched_rule.get("project_fte") or "").strip():
-            fte = Decimal(str(matched_rule["project_fte"]))
-            row["project_fte"] = fte
-            if is_osoblazsky_cech:
-                # The detailed slip already contains the fund of this particular
-                # reduced/full-time relation; the stored FTE is only a validation aid.
-                row["project_hours"] = Decimal(str(row.get("work_time_fund", 0))).quantize(Decimal("0.01"))
-                detected = Decimal(str(row.get("total_fte", 0)))
-                if detected and abs(detected - fte) > Decimal("0.01"):
-                    row["component_description"] = f"Pozor: nastavený úvazek {fte} neodpovídá úvazku {detected} odvozenému z pásky."
-            else:
-                row["project_hours"] = (Decimal(str(row.get("work_time_fund", 0))) * fte).quantize(Decimal("0.01"))
-        resolved_rows.append(row)
-    rows = resolved_rows
+    rows, items = resolve_payroll_rows(selected_project, rows)
     return {"period": period, "file_name": ", ".join(file_names), "rows": rows,
             "budget_items": [{"code": item.code, "name": item.name} for item in items]}
+
+
+PAYROLL_PERFORMANCE_PROJECTS = {
+    "17P ŘPSO": "Řešení předluženosti na severním Osoblažsku",
+    "19P ŘZZO": "Řešení zaměstnanosti a zaměstnatelnosti osob na Osoblažsku 2026+",
+    "15P DP MAS": "Řešení oblasti dluhové problematiky na území MAS",
+}
+
+
+def _project_for_performance(performance_code: str) -> Project | None:
+    target_name = next((name for code, name in PAYROLL_PERFORMANCE_PROJECTS.items()
+                        if normalized_name(code) == normalized_name(performance_code)), None)
+    if not target_name:
+        return None
+    recipient = normalized_name("Osoblažský cech, z.ú.")
+    return next((item for item in repo.projects()
+                 if normalized_name(item.project_name) == normalized_name(target_name)
+                 and normalized_name(item.recipient_name) == recipient), None)
+
+
+def _period_for_payroll_month(project_id: str, value: str | date) -> int | None:
+    month = value if isinstance(value, date) else date.fromisoformat(str(value)[:10])
+    for item in repo.project_schedules.get(project_id, {}).get("periods", []):
+        start = item["start_month"] if isinstance(item["start_month"], date) else date.fromisoformat(str(item["start_month"])[:10])
+        end = item["end_month"] if isinstance(item["end_month"], date) else date.fromisoformat(str(item["end_month"])[:10])
+        if start <= month <= end:
+            return int(item["monitoring_period"])
+    return None
+
+
+def _analyze_payroll_batch_archive(data: bytes, user: dict) -> dict:
+    try:
+        archive = zipfile.ZipFile(BytesIO(data))
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(422, "Soubor není platný ZIP archiv.") from exc
+    infos = [item for item in archive.infolist() if not item.is_dir()]
+    if not infos or len(infos) > 200:
+        raise HTTPException(422, "ZIP musí obsahovat 1 až 200 souborů.")
+    if sum(item.file_size for item in infos) > 200 * 1024 * 1024:
+        raise HTTPException(413, "Rozbalený ZIP je větší než povolených 200 MB.")
+    raw_groups: dict[tuple[str, str, int | None], dict] = {}
+    unrecognized: list[dict] = []
+    for info in infos:
+        file_name = os.path.basename(info.filename.replace("\\", "/"))
+        if not file_name.lower().endswith(".pdf"):
+            unrecognized.append({"file_name": file_name, "issue": "Soubor není PDF."})
+            continue
+        try:
+            rows = parse_payroll_slips(archive.read(info))
+        except (ValueError, RuntimeError):
+            unrecognized.append({"file_name": file_name, "issue": "Výplatní pásku se nepodařilo přečíst."})
+            continue
+        for row in rows:
+            performance = str(row.get("performance_code", "")).strip()
+            selected_project = _project_for_performance(performance)
+            period = _period_for_payroll_month(selected_project.project_id, row["month"]) if selected_project else None
+            key = (performance, selected_project.project_id if selected_project else "", period)
+            group = raw_groups.setdefault(key, {"performance_code": performance, "project": selected_project,
+                "monitoring_period": period, "files": [], "rows": []})
+            if file_name not in group["files"]:
+                group["files"].append(file_name)
+            group["rows"].append(row)
+    groups = []
+    for group in raw_groups.values():
+        selected_project = group.pop("project")
+        issues: list[str] = []
+        if not group["performance_code"]:
+            issues.append("Na pásce chybí pole Výkon.")
+        elif normalized_name(group["performance_code"]) not in {normalized_name(value) for value in PAYROLL_PERFORMANCE_PROJECTS}:
+            issues.append(f'Neznámý kód výkonu {group["performance_code"]}.')
+        if not selected_project:
+            target = next((name for code, name in PAYROLL_PERFORMANCE_PROJECTS.items()
+                           if normalized_name(code) == normalized_name(group["performance_code"])), "neurčený projekt")
+            issues.append(f'Projekt „{target}“ zatím v aplikaci neexistuje.')
+            resolved_rows = group["rows"]
+            items = []
+        elif not can_view_project(selected_project.project_id, user):
+            issues.append("K cílovému projektu nemáte přístup.")
+            resolved_rows = group["rows"]
+            items = []
+        else:
+            resolved_rows, items = resolve_payroll_rows(selected_project, group["rows"])
+            if group["monitoring_period"] is None:
+                issues.append("Měsíc pásky není zařazen do žádného monitorovacího období projektu.")
+            if not items:
+                issues.append("Projekt nemá aktivní rozpočet s osobními náklady.")
+            unmatched = sorted({str(row.get("full_name", "")) for row in resolved_rows if not row.get("budget_item_code")})
+            if unmatched:
+                issues.append("V Nastavení projektu chybí jednoznačné přiřazení: " + ", ".join(unmatched) + ".")
+            bonuses = sorted({str(row.get("full_name", "")) for row in resolved_rows if Decimal(str(row.get("project_bonus_available", 0))) != 0})
+            if bonuses:
+                issues.append("Páska obsahuje prémii vyžadující ruční kontrolu: " + ", ".join(bonuses) + ".")
+            missing_dates = sorted({str(row.get("full_name", "")) for row in resolved_rows if not row.get("payment_date")})
+            if missing_dates:
+                issues.append("Chybí datum úhrady: " + ", ".join(missing_dates) + ".")
+            fte_warnings = [str(row.get("component_description", "")) for row in resolved_rows
+                            if str(row.get("component_description", "")).startswith("Pozor:")]
+            issues.extend(fte_warnings)
+        groups.append({
+            "performance_code": group["performance_code"],
+            "project_id": selected_project.project_id if selected_project else None,
+            "project_name": selected_project.project_name if selected_project else next((name for code, name in PAYROLL_PERFORMANCE_PROJECTS.items() if normalized_name(code) == normalized_name(group["performance_code"])), "Neurčený projekt"),
+            "monitoring_period": group["monitoring_period"],
+            "months": sorted({str(row.get("month", ""))[:10] for row in resolved_rows}),
+            "files": group["files"], "rows": resolved_rows,
+            "budget_items": [{"code": item.code, "name": item.name} for item in items],
+            "issues": issues, "ready": not issues,
+        })
+    groups.sort(key=lambda item: (item["project_name"], item["monitoring_period"] or 999))
+    return {"groups": groups, "unrecognized": unrecognized,
+            "ready_groups": sum(bool(group["ready"]) for group in groups),
+            "total_files": len(infos)}
+
+
+def _batch_entry(row: dict, period: int) -> Sd2MonthlyEntry:
+    employment = sd2_employment_type(str(row["budget_item_code"]))
+    relation = {"Smlouva": "Pracovní smlouva", "DPC": "Dohoda o pracovní činnosti", "DPP": "Dohoda o provedení práce"}[employment]
+    performance = str(row.get("performance_code", "")).strip()
+    fte = Decimal(str(row.get("total_fte", 0)))
+    return Sd2MonthlyEntry(
+        monitoring_period=period, month=row["month"], budget_item_code=str(row["budget_item_code"]),
+        gross_wage=row.get("gross_wage", 0), employer_contributions=row.get("employer_contributions", 0),
+        other_with_contributions=row.get("other_with_contributions", 0), other_without_contributions=0,
+        payment_date=row.get("payment_date"), subject_id=str(row.get("subject_id", "")),
+        first_name=str(row.get("first_name", "")), last_name=str(row.get("last_name", "")),
+        employment_type=employment, work_time_fund=row.get("work_time_fund", 0),
+        project_hours=row.get("project_hours", row.get("worked_hours", 0)),
+        description=f"{relation}; výkon {performance}; úvazek {fte}; automaticky načteno ze společného ZIP.",
+    )
+
+
+@app.post("/api/payroll-batch/analyze")
+async def analyze_payroll_batch(file: UploadFile = File(...), user=Depends(require_editor)):
+    if not file.filename or not file.filename.lower().endswith(".zip"):
+        raise HTTPException(415, "Vyberte ZIP s výplatními páskami.")
+    data = await file.read(50 * 1024 * 1024 + 1)
+    if len(data) > 50 * 1024 * 1024:
+        raise HTTPException(413, "ZIP je větší než povolených 50 MB.")
+    return _analyze_payroll_batch_archive(data, user)
+
+
+@app.post("/api/payroll-batch/import")
+async def import_payroll_batch(file: UploadFile = File(...), user=Depends(require_editor)):
+    if not file.filename or not file.filename.lower().endswith(".zip"):
+        raise HTTPException(415, "Vyberte ZIP s výplatními páskami.")
+    data = await file.read(50 * 1024 * 1024 + 1)
+    if len(data) > 50 * 1024 * 1024:
+        raise HTTPException(413, "ZIP je větší než povolených 50 MB.")
+    result = _analyze_payroll_batch_archive(data, user)
+    ready = [group for group in result["groups"] if group["ready"]]
+    if not ready:
+        raise HTTPException(422, "V archivu není žádná skupina připravená k bezpečnému uložení.")
+    imported_entries = 0
+    for group in ready:
+        project_id = str(group["project_id"]); period = int(group["monitoring_period"])
+        entries = [_batch_entry(row, period) for row in group["rows"]]
+        keys = {(entry.month, entry.budget_item_code,
+                 normalized_name(f"{entry.first_name} {entry.last_name}")) for entry in entries}
+        existing = repo.sd2_entries[project_id]
+        replaced = [entry for entry in existing if (entry.month, entry.budget_item_code,
+                    normalized_name(f"{entry.first_name} {entry.last_name}")) in keys]
+        if google_repo:
+            for old_entry in replaced:
+                google_repo.delete_record("SD2_MESICE", "sd2_entry_id", old_entry.sd2_entry_id)
+            google_repo.append_records("SD2_MESICE", [{**entry.model_dump(), "project_id": project_id,
+                "created_at": datetime.utcnow().isoformat(), "created_by": user["email"]} for entry in entries])
+        replaced_ids = {entry.sd2_entry_id for entry in replaced}
+        repo.sd2_entries[project_id] = [entry for entry in existing if entry.sd2_entry_id not in replaced_ids] + entries
+        imported_entries += len(entries)
+    return {**result, "imported_groups": len(ready), "imported_entries": imported_entries}
 
 
 @app.get("/api/projects/{project_id}/sd2-attachments")

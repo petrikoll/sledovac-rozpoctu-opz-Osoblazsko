@@ -217,3 +217,22 @@ main > section.panel:has(input[aria-label="PDF žádosti o platbu"]) .payment-li
 @media (max-width: 520px) { .funding-actions { align-items: stretch; flex-direction: column; } .funding-actions button { align-self: flex-start; } }
 @media (max-width: 900px) { .metrics { grid-template-columns: repeat(2, 1fr); } .settlement { grid-template-columns: 1fr; } .payment-list article .payment-values { align-items: flex-end; gap: 10px; } .payment-import-files { grid-template-columns: 1fr; } }
 @media (max-width: 900px) { .half-row { grid-template-columns: 1fr; } .half-placeholder { display: none; } .settlement-strip { align-items: flex-start; flex-direction: column; gap: 3px; } }
+
+.payroll-batch-panel { order: 2; margin: 0 0 14px; padding: 16px 18px; }
+.payroll-batch-head { display: flex; justify-content: space-between; align-items: center; gap: 18px; }
+.payroll-batch-head h2 { margin: 3px 0 4px; font-size: 20px; }
+.payroll-batch-head p, .payroll-batch-file { margin: 0; color: #63756d; font-size: 13px; }
+.payroll-batch-file { margin-top: 10px; }
+.payroll-batch-groups { display: grid; gap: 8px; margin-top: 12px; }
+.payroll-batch-groups article { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 16px; padding: 10px 12px; border: 1px solid #ccd8d1; border-radius: 8px; background: #f7faf8; }
+.payroll-batch-groups article.ready { border-color: #a9ccb4; background: #edf7f0; }
+.payroll-batch-groups article.blocked { border-color: #e0b5a5; background: #fff1eb; }
+.payroll-batch-groups h3 { margin: 2px 0; font-size: 15px; }
+.payroll-batch-groups p { margin: 0; color: #607168; font-size: 12px; }
+.payroll-batch-groups article > strong { align-self: center; color: #2f7251; }
+.payroll-batch-groups article.blocked > strong { color: #a0442b; }
+.payroll-batch-groups ul { grid-column: 1 / -1; margin: 3px 0 0; padding-left: 20px; color: #8f3c28; font-size: 12px; }
+.payroll-batch-groups article > a { grid-column: 1 / -1; width: max-content; font-size: 12px; }
+.payroll-batch-actions { display: flex; justify-content: space-between; align-items: center; gap: 14px; margin-top: 12px; }
+.payroll-batch-actions span { color: #5f7068; font-size: 12px; }
+@media (max-width: 700px) { .payroll-batch-head, .payroll-batch-actions { align-items: stretch; flex-direction: column; } .payroll-batch-head .upload-button, .payroll-batch-actions button { align-self: flex-start; } }

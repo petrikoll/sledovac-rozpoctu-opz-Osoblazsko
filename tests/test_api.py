@@ -1,9 +1,11 @@
 from fastapi.testclient import TestClient
 from datetime import date
 from decimal import Decimal
+from io import BytesIO
 from types import SimpleNamespace
+import zipfile
 from app.main import app, repo
-from app.models import PaymentRequest, Sd2MonthlyEntry
+from app.models import BudgetAnalysis, BudgetItem, PaymentRequest, Sd2MonthlyEntry
 
 client = TestClient(app)
 
@@ -180,6 +182,56 @@ def test_katfol_can_only_view_osoblazsky_cech_projects():
 
     assert can_view_project(cech["project_id"], user) is True
     assert can_view_project(other["project_id"], user) is False
+
+
+def test_batch_payroll_zip_routes_and_replaces_same_worker(monkeypatch):
+    project = client.post("/api/projects", json={
+        "project_code": "CZ.BATCH.CECH",
+        "project_name": "Řešení předluženosti na severním Osoblažsku",
+        "recipient_name": "Osoblažský cech, z.ú.",
+    }).json()
+    project_id = project["project_id"]
+    repo.project_data[project_id].active_budget_version_id = "batch-budget"
+    item = BudgetItem(code="1.1.1.1", name="Dluhový poradce", level=4, category="direct",
+                      is_leaf=True, total_amount=Decimal("100000"), source_row_number=1)
+    repo.budgets[project_id] = [{"version_id": "batch-budget", "analysis": BudgetAnalysis(
+        sha256="batch", file_name="batch.xlsx", items=[item], total_amount=Decimal("100000"),
+        lump_sum_rate=Decimal("0.4"), lump_sum_base_code="1.1", leaf_count=1, summary_count=0)}]
+    repo.project_schedules[project_id] = {"project_start_date": date(2026, 1, 1),
+        "project_end_date": date(2026, 12, 1), "periods": [{"monitoring_period": 1,
+        "start_month": date(2026, 1, 1), "end_month": date(2026, 6, 1)}]}
+    repo.worker_assignments[project_id] = [{"employee_name": "Andrea Augustýnová",
+        "budget_item_code": "1.1.1.1", "project_fte": "1", "contract_contains": ""}]
+
+    monkeypatch.setattr("app.main.parse_payroll_slips", lambda _: [{
+        "source_key": "andrea", "full_name": "Augustýnová Andrea", "first_name": "Andrea",
+        "last_name": "Augustýnová", "performance_code": "17P ŘPSO", "month": "2026-05-01",
+        "category": "HPP", "contract_name": "HPP", "component_amount": Decimal("42000"),
+        "gross_wage": Decimal("42000"), "employer_contributions": Decimal("14196"),
+        "work_time_fund": Decimal("168"), "worked_hours": Decimal("168"),
+        "project_hours": Decimal("168"), "total_fte": Decimal("1"),
+        "payment_date": "2026-06-08", "subject_id": "01937324",
+        "project_bonus_available": Decimal("0"), "other_with_contributions": Decimal("0"),
+    }])
+    archive = BytesIO()
+    with zipfile.ZipFile(archive, "w") as output:
+        output.writestr("andrea.pdf", b"fake-pdf")
+
+    analyzed = client.post("/api/payroll-batch/analyze",
+        files={"file": ("mzdy.zip", archive.getvalue(), "application/zip")})
+    assert analyzed.status_code == 200
+    assert analyzed.json()["groups"][0]["ready"] is True
+    assert analyzed.json()["groups"][0]["project_id"] == project_id
+    assert analyzed.json()["groups"][0]["monitoring_period"] == 1
+
+    for _ in range(2):
+        imported = client.post("/api/payroll-batch/import",
+            files={"file": ("mzdy.zip", archive.getvalue(), "application/zip")})
+        assert imported.status_code == 200
+    saved = [entry for entry in repo.sd2_entries[project_id]
+             if entry.first_name == "Andrea" and entry.month == date(2026, 5, 1)]
+    assert len(saved) == 1
+    assert saved[0].gross_wage == Decimal("42000")
 
 
 def test_editor_can_save_worker_assignments():
