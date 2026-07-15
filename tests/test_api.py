@@ -164,6 +164,24 @@ def test_srssjesenik_can_only_view_jesenicko_project():
     assert can_view_project(other["project_id"], user) is False
 
 
+def test_katfol_can_only_view_osoblazsky_cech_projects():
+    cech = client.post("/api/projects", json={
+        "project_code": "CZ.CECH",
+        "project_name": "Projekt Osoblažského cechu",
+        "recipient_name": "Osoblažský cech, z.ú.",
+    }).json()
+    other = client.post("/api/projects", json={
+        "project_code": "CZ.OTHER.RECIPIENT",
+        "project_name": "Projekt jiného příjemce",
+        "recipient_name": "Jiný příjemce, z.ú.",
+    }).json()
+    from app.main import can_view_project
+    user = {"email": "katfol@email.cz", "role": "editor"}
+
+    assert can_view_project(cech["project_id"], user) is True
+    assert can_view_project(other["project_id"], user) is False
+
+
 def test_editor_can_save_worker_assignments():
     project = client.post("/api/projects", json={
         "project_code": "CZ.MOSTY.WORKERS",
