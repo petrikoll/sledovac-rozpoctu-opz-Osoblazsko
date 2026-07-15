@@ -186,10 +186,11 @@ def test_editor_can_save_worker_assignments():
         app.dependency_overrides.pop(require_editor, None)
 
     assert response.status_code == 200
-    assert response.json()[0]["employee_names"] == "Jana Nováková, Petr Novák"
+    assert [item["employee_names"] for item in response.json()] == ["Jana Nováková", "Petr Novák"]
     saved = client.get(f"/api/projects/{project['project_id']}/worker-assignments")
     assert saved.status_code == 200
-    assert saved.json()[0]["budget_item_code"] == "1.1.1.1"
+    assert [item["budget_item_code"] for item in saved.json()] == ["1.1.1.1", "1.1.1.1"]
+    assert [item["employee_name"] for item in saved.json()] == ["Jana Nováková", "Petr Novák"]
 
 
 def test_delete_sd2_period_keeps_other_periods():

@@ -9,6 +9,12 @@ import fitz
 
 
 TITLES = {"bc", "mgr", "ing", "mudr", "judr", "phd", "phdr", "dis"}
+MONTHS_CS = {
+    "leden": 1, "unor": 2, "únor": 2, "brezen": 3, "březen": 3,
+    "duben": 4, "kveten": 5, "květen": 5, "cerven": 6, "červen": 6,
+    "cervenec": 7, "červenec": 7, "srpen": 8, "zari": 9, "září": 9,
+    "rijen": 10, "říjen": 10, "listopad": 11, "prosinec": 12,
+}
 
 
 def _number(value: str) -> Decimal:
@@ -216,6 +222,111 @@ def parse_payroll_list_page(text: str, page_number: int = 1) -> list[dict]:
     return results
 
 
+def parse_detailed_payslip_page(text: str, page_number: int = 1) -> dict | None:
+    """Parse the detailed payroll slip used by Osoblažský cech (one relation per PDF)."""
+    lines = _plain_lines(text)
+    if not any(line.startswith("Kategorie ") for line in lines) or "Náklady zaměstnavatele" not in lines:
+        return None
+    month_match = next((re.fullmatch(r"Měsíc\s+([A-Za-zÁ-ž]+)\s+(\d{4})", line) for line in lines
+                        if line.startswith("Měsíc ")), None)
+    if not month_match:
+        return None
+    month_name, year = month_match.groups()
+    month_number = MONTHS_CS.get(month_name.casefold())
+    if not month_number:
+        return None
+    month = date(int(year), month_number, 1)
+    try:
+        worker_index = lines.index("Pracovník")
+    except ValueError:
+        worker_index = min(len(lines), 4)
+    name_line = next((line for line in reversed(lines[:worker_index]) if " " in line), "")
+    name_line = re.sub(
+        r",?\s+(?:Bc|Mgr|Ing|DiS|PhDr|JUDr|RNDr|Ph\.D)\.?$",
+        "",
+        name_line,
+        flags=re.IGNORECASE,
+    ).strip()
+    name_match = re.search(r"([A-ZÁ-Ž][A-Za-zÁ-ž-]+)\s+([A-ZÁ-Ž][A-Za-zÁ-ž-]+)$", name_line)
+    if not name_match:
+        return None
+    surname_raw = name_match.group(1)
+    surname_parts = re.findall(r"[A-ZÁ-Ž][a-zá-ž-]+", surname_raw)
+    surname = next((part for part in reversed(surname_parts) if part.casefold().endswith("ová")), surname_raw)
+    full_name = f"{surname} {name_match.group(2)}"
+    last_name, first_name = _split_name(full_name)
+    category_line = next(line for line in lines if line.startswith("Kategorie "))
+    category = category_line.removeprefix("Kategorie ").strip()
+
+    def amount_after(label: str, occurrence: int = 1) -> Decimal:
+        indices = [index for index, line in enumerate(lines) if line == label]
+        if len(indices) < occurrence:
+            return Decimal("0")
+        for value in lines[indices[occurrence - 1] + 1:indices[occurrence - 1] + 8]:
+            parsed = _line_amount(value.replace(" Kč", ""))
+            if parsed is not None:
+                return parsed
+        return Decimal("0")
+
+    gross_wage = amount_after("Hrubý příjem")
+    costs_index = lines.index("Náklady zaměstnavatele")
+    employer_contributions = Decimal("0")
+    try:
+        insurance_label = lines.index("Soc. + zdr. poj. zaměstnavatele", costs_index)
+        employer_contributions = _line_amount(lines[insurance_label + 4]) or Decimal("0")
+    except (ValueError, IndexError):
+        pass
+    full_time_fund = Decimal(sum(1 for day in range(1, calendar.monthrange(month.year, month.month)[1] + 1)
+                                 if date(month.year, month.month, day).weekday() < 5) * 8)
+    fund = full_time_fund
+    try:
+        parameters = lines.index("Parametry měsíce")
+        values = [_line_amount(line) for line in lines[parameters + 1:parameters + 4]]
+        values = [value for value in values if value is not None]
+        if values:
+            fund = values[-1]
+    except ValueError:
+        pass
+    worked_hours = fund
+    try:
+        worked = lines.index("Odpracovaná doba celkem")
+        work_values = [_line_amount(line) for line in lines[worked + 4:worked + 9]]
+        plausible = [value for value in work_values if value is not None and value > 0]
+        if plausible:
+            worked_hours = max(plausible)
+    except ValueError:
+        pass
+    premium = amount_after("Prémie")
+    payment_date = None
+    try:
+        signature_index = lines.index("Datum a podpis")
+        date_value = next(value for value in lines[signature_index + 1:signature_index + 8]
+                          if re.fullmatch(r"\d{1,2}\.\d{1,2}\.\d{4}", value))
+        day, paid_month, paid_year = (int(value) for value in date_value.split("."))
+        payment_date = date(paid_year, paid_month, day).isoformat()
+    except (ValueError, StopIteration):
+        pass
+    subject_match = re.search(r"IČO:\s*(\d{6,10})", text)
+    total_fte = (fund / full_time_fund).quantize(Decimal("0.0001")) if full_time_fund else Decimal("0")
+    employment_type = _employment_type(category, month, gross_wage)
+    return {
+        "source_key": f"{page_number}-detailed", "page_number": page_number,
+        "employee_number": "", "full_name": full_name, "last_name": last_name,
+        "first_name": first_name, "subject_id": subject_match.group(1) if subject_match else "",
+        "category": category, "contract_name": category, "position_name": "",
+        "component_code": "", "component_name": "Hrubá mzda", "component_description": "",
+        "component_amount": gross_wage, "contract_gross": gross_wage,
+        "month": month.isoformat(), "gross_wage": gross_wage,
+        "employer_contributions": employer_contributions,
+        "employer_contribution_rate": (employer_contributions / gross_wage if gross_wage else Decimal("0")),
+        "work_time_fund": fund, "full_time_fund": full_time_fund, "total_fte": total_fte,
+        "vacation_hours": Decimal("0"), "vacation_days": Decimal("0"),
+        "worked_hours": worked_hours, "project_hours": fund, "payment_date": payment_date,
+        "employment_type": employment_type,
+        "project_bonus_available": premium, "project_bonus_label": "Prémie" if premium else "",
+    }
+
+
 def parse_payroll_slips(data: bytes) -> list[dict]:
     """Extract only SD-2-relevant values; personal IDs and bank accounts are discarded."""
     document = fitz.open(stream=data, filetype="pdf")
@@ -234,7 +345,11 @@ def parse_payroll_slips(data: bytes) -> list[dict]:
             row["project_hours"] = row["worked_hours"]
             rows.append(row)
         else:
-            rows.extend(parse_payroll_list_page(text, page_number))
+            detailed = parse_detailed_payslip_page(text, page_number)
+            if detailed:
+                rows.append(detailed)
+            else:
+                rows.extend(parse_payroll_list_page(text, page_number))
     if not rows:
         raise ValueError("V PDF nebyla nalezena žádná podporovaná výplatní páska ani výplatní list.")
     return rows

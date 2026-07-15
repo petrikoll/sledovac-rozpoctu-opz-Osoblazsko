@@ -685,7 +685,7 @@ async def analyze_payroll_slips(project_id: str, period: int, files: list[Upload
     assignment_rules: dict[str, list[dict]] = defaultdict(list)
     for assignment in assignments:
         stored_name = str(assignment.get("employee_name", "")).strip()
-        names = [stored_name] if stored_name else re.split(r"[,;\n]+", str(assignment.get("employee_names", "")))
+        names = re.split(r"[,;\n]+", stored_name or str(assignment.get("employee_names", "")))
         for name in names:
             if name.strip():
                 rule = {
@@ -705,6 +705,7 @@ async def analyze_payroll_slips(project_id: str, period: int, files: list[Upload
         return {"period": period, "file_name": ", ".join(file_names), "rows": rows,
                 "budget_items": [{"code": item.code, "name": item.name} for item in items]}
     resolved_rows = []
+    is_osoblazsky_cech = normalized_name(selected_project.recipient_name) == normalized_name("Osoblažský cech, z.ú.")
     for row in rows:
         parsed_name = normalized_name(f'{row.get("first_name", "")} {row.get("last_name", "")}')
         candidates = assignment_rules.get(parsed_name, assignment_rules.get(normalized_name(row["full_name"]), []))
@@ -720,7 +721,15 @@ async def analyze_payroll_slips(project_id: str, period: int, files: list[Upload
         if matched_rule and str(matched_rule.get("project_fte") or "").strip():
             fte = Decimal(str(matched_rule["project_fte"]))
             row["project_fte"] = fte
-            row["project_hours"] = (Decimal(str(row.get("work_time_fund", 0))) * fte).quantize(Decimal("0.01"))
+            if is_osoblazsky_cech:
+                # The detailed slip already contains the fund of this particular
+                # reduced/full-time relation; the stored FTE is only a validation aid.
+                row["project_hours"] = Decimal(str(row.get("work_time_fund", 0))).quantize(Decimal("0.01"))
+                detected = Decimal(str(row.get("total_fte", 0)))
+                if detected and abs(detected - fte) > Decimal("0.01"):
+                    row["component_description"] = f"Pozor: nastavený úvazek {fte} neodpovídá úvazku {detected} odvozenému z pásky."
+            else:
+                row["project_hours"] = (Decimal(str(row.get("work_time_fund", 0))) * fte).quantize(Decimal("0.01"))
         resolved_rows.append(row)
     rows = resolved_rows
     return {"period": period, "file_name": ", ".join(file_names), "rows": rows,
@@ -884,7 +893,7 @@ def save_worker_assignments(project_id: str, body: dict, user=Depends(require_ed
     records = []
     for item in body.get("assignments", []):
         code = str(item.get("budget_item_code", "")).strip()
-        name = str(item.get("employee_name") or item.get("employee_names", "")).strip()
+        names = [name.strip() for name in re.split(r"[,;\n]+", str(item.get("employee_name") or item.get("employee_names", ""))) if name.strip()]
         fte_raw = item.get("project_fte")
         amount_raw = item.get("payroll_component_amount")
         try:
@@ -896,12 +905,13 @@ def save_worker_assignments(project_id: str, body: dict, user=Depends(require_ed
             raise HTTPException(422, "ProjektovĂ˝ Ăşvazek musĂ­ bĂ˝t od 0 do 1.")
         if amount is not None and amount < 0:
             raise HTTPException(422, "MzdovĂˇ sloĹľka nesmĂ­ bĂ˝t zĂˇpornĂˇ.")
-        if code and name:
-            records.append({"worker_assignment_id": str(uuid4()), "project_id": project_id,
-                "budget_item_code": code, "employee_names": name,
-                "updated_at": datetime.utcnow().isoformat(), "updated_by": user["email"],
-                "employee_name": name, "project_fte": fte, "payroll_component_amount": amount,
-                "contract_contains": str(item.get("contract_contains", "")).strip()})
+        if code:
+            for name in names:
+                records.append({"worker_assignment_id": str(uuid4()), "project_id": project_id,
+                    "budget_item_code": code, "employee_names": name,
+                    "updated_at": datetime.utcnow().isoformat(), "updated_by": user["email"],
+                    "employee_name": name, "project_fte": fte, "payroll_component_amount": amount,
+                    "contract_contains": str(item.get("contract_contains", "")).strip()})
     repo.worker_assignments[project_id] = records
     if google_repo:
         google_repo.delete_records("PRACOVNICI_ROZPOCTU", "project_id", project_id)
