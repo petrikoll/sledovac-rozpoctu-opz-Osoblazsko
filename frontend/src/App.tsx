@@ -1065,11 +1065,11 @@ function Sd2MonthlyDialog({ id, period, onClose }: { id: string; period: number;
 }
 function Sd2MonthlyDialogNew({ id, period, projectCode, projectName, onClose }: { id: string; period: number; projectCode: string; projectName: string; onClose: () => void }) {
   const qc = useQueryClient();
-  const isMostyProject = projectName.trim().toLocaleLowerCase("cs-CZ") === "mosty v rodině";
   const { data = [] } = useQuery({ queryKey: ["sd2-monthly", id, period], queryFn: () => api<Sd2Entry[]>(`/projects/${id}/sd2-monthly?period=${period}`) });
   const { data: attachments = [] } = useQuery({ queryKey: ["sd2-attachments", id, period], queryFn: () => api<any[]>(`/projects/${id}/sd2-attachments?period=${period}`) });
   const { data: budgetRows = [] } = useQuery({ queryKey: ["budget-status", id], queryFn: () => api<BudgetRow[]>(`/projects/${id}/budget-status`) });
   const { data: projectSchedule } = useQuery({ queryKey: ["project-schedule", id], queryFn: () => api<ProjectSchedule>(`/projects/${id}/schedule`) });
+  const { data: workerAssignments = [] } = useQuery({ queryKey: ["worker-assignments", id], queryFn: () => api<WorkerAssignment[]>(`/projects/${id}/worker-assignments`) });
   const [changes, setChanges] = useState<Record<string, string | number>>({}); const [saving, setSaving] = useState(false); const [error, setError] = useState(""); const [driveToken, setDriveToken] = useState(""); const [uploading, setUploading] = useState(false); const [uploadNotice, setUploadNotice] = useState(""); const [xmlDetails, setXmlDetails] = useState(false); const [defaultSubjectId, setDefaultSubjectId] = useState(""); const [extraMonths, setExtraMonths] = useState<string[]>([]); const [payrollPreview, setPayrollPreview] = useState<PayrollPreview | null>(null); const [payrollEntries, setPayrollEntries] = useState<Sd2Entry[] | null>(null); const [payrollMapping, setPayrollMapping] = useState<Record<number, string>>({}); const [payrollProjectHours, setPayrollProjectHours] = useState<Record<number, string>>({}); const [payrollBonusMode, setPayrollBonusMode] = useState<Record<number, "exclude" | "all" | "partial">>({}); const [payrollBonusAmount, setPayrollBonusAmount] = useState<Record<number, string>>({}); const [analyzingPayroll, setAnalyzingPayroll] = useState(false);
   const scheduledPeriod = projectSchedule?.periods.find(item => item.monitoring_period === period);
   const configuredMonths = scheduledPeriod ? monthsInRange(scheduledPeriod.start_month, scheduledPeriod.end_month) : projectCode === SD2_PROJECT_CODE ? (SD2_MONTHS[period - 1] || []) : [];
@@ -1077,42 +1077,86 @@ function Sd2MonthlyDialogNew({ id, period, projectCode, projectName, onClose }: 
   const sd2Rows = personnelBudgetRows(budgetRows);
   const sd2Codes = projectCode === SD2_PROJECT_CODE ? SD2_CODES : [...new Set(sd2Rows.map(row => row.code))];
   const sd2Names = Object.fromEntries(sd2Rows.map(row => [row.code, row.name]));
+  const normalizePerson = (value: string) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("cs-CZ").replace(/[^a-z0-9]+/g, " ").trim();
+  const personParts = (value: string) => normalizePerson(value).split(" ").filter(Boolean);
+  const samePerson = (left: string, right: string) => {
+    const a = personParts(left); const b = personParts(right);
+    return Boolean(a.length && b.length && a[0] === b[0] && a[a.length - 1] === b[b.length - 1]);
+  };
+  const entryPerson = (entry: Sd2Entry) => `${entry.first_name || ""} ${entry.last_name || ""}`.trim();
+  const configuredWorkers = workerAssignments.reduce<Record<string, string[]>>((result, assignment) => {
+    const names = (assignment.employee_name || assignment.employee_names || "").split(/[,;\n]+/).map(name => name.trim()).filter(Boolean);
+    result[assignment.budget_item_code] = [...(result[assignment.budget_item_code] || []), ...names];
+    return result;
+  }, {});
+  const currentEntries = payrollEntries || data;
+  const displayRows = sd2Codes.flatMap(code => {
+    const configured = configuredWorkers[code] || [];
+    const found = currentEntries.filter(entry => entry.budget_item_code === code && entryPerson(entry)).map(entryPerson);
+    const extras = found.filter(name => !configured.some(saved => samePerson(saved, name)));
+    const people = [...configured, ...Array.from(new Set(extras))];
+    return (people.length ? people : [""]).map((employeeName, index) => ({ code, employeeName, key: `${code}|${normalizePerson(employeeName) || index}` }));
+  });
   useEffect(() => { const savedSubjectId = data.find(entry => entry.subject_id)?.subject_id; if (savedSubjectId) setDefaultSubjectId(savedSubjectId); }, [data]);
   const numericFields = new Set<keyof Sd2Entry>(["gross_wage", "employer_contributions", "other_with_contributions", "other_without_contributions", "work_time_fund", "project_hours"]);
-  const read = (code: string, month: string, field: keyof Sd2Entry) => { const changed = changes[`${code}|${month}|${field}`]; if (changed != null) return changed; const matching = (payrollEntries || data).filter(x => x.budget_item_code === code && x.month === month); if (numericFields.has(field)) return matching.reduce((sum, entry) => sum + Number(entry[field] || 0), 0); return matching[0]?.[field] ?? ""; };
-  const set = (code: string, month: string, field: keyof Sd2Entry, value: string) => setChanges(current => ({ ...current, [`${code}|${month}|${field}`]: value }));
+  const entriesForRow = (row: { code: string; employeeName: string }, source = currentEntries) => source.filter(entry => entry.budget_item_code === row.code && (!row.employeeName || samePerson(row.employeeName, entryPerson(entry))));
+  const read = (row: { code: string; employeeName: string; key: string }, month: string, field: keyof Sd2Entry) => { const changed = changes[`${row.key}|${month}|${field}`]; if (changed != null) return changed; const matching = entriesForRow(row).filter(x => x.month === month); if (numericFields.has(field)) return matching.reduce((sum, entry) => sum + Number(entry[field] || 0), 0); return matching[0]?.[field] ?? ""; };
+  const set = (row: { key: string }, month: string, field: keyof Sd2Entry, value: string) => setChanges(current => ({ ...current, [`${row.key}|${month}|${field}`]: value }));
   const employmentFor = (code: string) => code.startsWith("1.1.2.") ? "DPC" : code.startsWith("1.1.3.") ? "DPP" : "Smlouva";
-  const makeEntries = (): Sd2Entry[] => payrollEntries || sd2Codes.flatMap(code => months.map(month => {
-    const old = data.find(x => x.budget_item_code === code && x.month === month);
+  const makeEntries = (): Sd2Entry[] => {
+    const detailedSource = payrollEntries || (data.some(entry => entry.first_name || entry.last_name) ? data : null);
+    if (detailedSource) return detailedSource.map(entry => {
+      const row = displayRows.find(candidate => candidate.code === entry.budget_item_code && (!candidate.employeeName || samePerson(candidate.employeeName, entryPerson(entry))));
+      if (!row) return { ...entry, employment_type: employmentFor(entry.budget_item_code) as Sd2Entry["employment_type"] };
+      const next = { ...entry, employment_type: employmentFor(entry.budget_item_code) as Sd2Entry["employment_type"] };
+      for (const field of ["gross_wage", "employer_contributions", "other_with_contributions", "other_without_contributions", "payment_date"] as (keyof Sd2Entry)[]) {
+        const changed = changes[`${row.key}|${entry.month}|${field}`];
+        if (changed != null) (next as any)[field] = numericFields.has(field) ? Number(changed || 0) : (changed || null);
+      }
+      return next;
+    });
+    return displayRows.flatMap(row => months.map(month => {
+    const old = entriesForRow(row, data).find(x => x.month === month);
+    const nameParts = row.employeeName.trim().split(/\s+/).filter(Boolean);
     return {
-      sd2_entry_id: old?.sd2_entry_id, monitoring_period: period, month, budget_item_code: code,
-      gross_wage: Number(read(code, month, "gross_wage") || 0),
-      employer_contributions: code === "1.1.3.1" ? 0 : Number(read(code, month, "employer_contributions") || 0),
-      other_with_contributions: Number(read(code, month, "other_with_contributions") || 0),
-      other_without_contributions: Number(read(code, month, "other_without_contributions") || 0),
-      payment_date: String(read(code, month, "payment_date") || "") || null,
-      external_id: String(read(code, month, "external_id") || ""),
-      subject_id: String(read(code, month, "subject_id") || defaultSubjectId || ""),
-      last_name: String(read(code, month, "last_name") || ""), first_name: String(read(code, month, "first_name") || ""),
-      employment_type: employmentFor(code) as Sd2Entry["employment_type"],
-      work_time_fund: Number(read(code, month, "work_time_fund") || 0), project_hours: Number(read(code, month, "project_hours") || 0),
-      description: String(read(code, month, "description") || ""),
+      sd2_entry_id: old?.sd2_entry_id, monitoring_period: period, month, budget_item_code: row.code,
+      gross_wage: Number(read(row, month, "gross_wage") || 0),
+      employer_contributions: row.code.startsWith("1.1.3.") ? 0 : Number(read(row, month, "employer_contributions") || 0),
+      other_with_contributions: Number(read(row, month, "other_with_contributions") || 0),
+      other_without_contributions: Number(read(row, month, "other_without_contributions") || 0),
+      payment_date: String(read(row, month, "payment_date") || "") || null,
+      external_id: "", subject_id: defaultSubjectId || "",
+      first_name: nameParts[0] || "", last_name: nameParts.slice(1).join(" "),
+      employment_type: employmentFor(row.code) as Sd2Entry["employment_type"],
+      work_time_fund: 0, project_hours: 0, description: "",
     };
-  }));
+    }));
+  };
+  function setXmlEntry(index: number, field: keyof Sd2Entry, value: string) {
+    const entries = makeEntries().map((entry, itemIndex) => {
+      if (itemIndex !== index) return entry;
+      const next = { ...entry } as Record<string, unknown>;
+      next[field] = numericFields.has(field) ? Number(value || 0) : field === "payment_date" ? (value || null) : value;
+      return next as Sd2Entry;
+    });
+    setPayrollEntries(entries);
+  }
+  const xmlEntries = makeEntries().map((entry, index) => ({ entry, index })).filter(({ entry }) =>
+    Boolean(entry.first_name || entry.last_name || entry.gross_wage || entry.employer_contributions || entry.other_with_contributions || entry.other_without_contributions));
   async function save(close = true) { setSaving(true); setError(""); try { await api(`/projects/${id}/sd2-monthly`, { method: "PUT", body: JSON.stringify({ entries: makeEntries() }) }); await Promise.all([qc.invalidateQueries({ queryKey: ["budget-status", id] }), qc.invalidateQueries({ queryKey: ["sd2-monthly", id, period] })]); if (close) onClose(); return true; } catch (e) { setError(e instanceof Error ? e.message : "Podklad SD2 se nepodařilo uložit."); return false; } finally { setSaving(false); } }
   async function exportXml() { const entries = makeEntries(); const hasFinancialData = entries.some(entry => entry.gross_wage || entry.employer_contributions || entry.other_with_contributions || entry.other_without_contributions); if (!hasFinancialData && !window.confirm("V tomto období nejsou vyplněné žádné finanční údaje. Chcete přesto stáhnout prázdné XML SD-2?")) return; setError(""); try { await downloadApi(`/projects/${id}/sd2-xml?period=${period}`, `SD-2_obdobi_${period}.xml`, { method: "POST", body: JSON.stringify({ entries }) }); if (!hasFinancialData) { setUploadNotice("Bylo staženo prázdné XML bez záznamů."); window.setTimeout(() => setUploadNotice(""), 5000); } } catch (e) { setError(e instanceof Error ? e.message : "XML SD-2 se nepodařilo vytvořit."); setXmlDetails(true); } }
   async function clearPeriod() {
-    if (!window.confirm(`Opravdu chcete smazat všechny údaje SD-2 v ${period}. období? Soubory uložené na vašem Google Disku zůstanou zachované.`)) return;
+    if (!window.confirm(`Opravdu chcete smazat všechny údaje SD-2 v ${period}. období?`)) return;
     setSaving(true); setError("");
     try {
       await api(`/projects/${id}/sd2-period?period=${period}`, { method: "DELETE" });
-      setChanges({}); setExtraMonths([]); setPayrollPreview(null);
+      setChanges({}); setExtraMonths([]); setPayrollPreview(null); setPayrollEntries(null);
       await Promise.all([qc.invalidateQueries({ queryKey: ["sd2-monthly", id, period] }), qc.invalidateQueries({ queryKey: ["sd2-attachments", id, period] }), qc.invalidateQueries({ queryKey: ["budget-status", id] })]);
       setUploadNotice(`Všechny údaje ${period}. období byly smazány.`); window.setTimeout(() => setUploadNotice(""), 5000);
     } catch (e) { setError(e instanceof Error ? e.message : "Údaje období se nepodařilo smazat."); }
     finally { setSaving(false); }
   }
-  function applySubjectId() { setChanges(current => { const next = { ...current }; for (const code of sd2Codes) for (const month of months) next[`${code}|${month}|subject_id`] = defaultSubjectId; return next; }); }
+  function applySubjectId() { if (payrollEntries || data.some(entry => entry.first_name || entry.last_name)) { setPayrollEntries(makeEntries().map(entry => ({ ...entry, subject_id: defaultSubjectId }))); return; } setChanges(current => { const next = { ...current }; for (const code of sd2Codes) for (const month of months) next[`${code}|${month}|subject_id`] = defaultSubjectId; return next; }); }
   async function analyzePayroll(files: File[]) {
     setAnalyzingPayroll(true); setError(""); setPayrollPreview(null);
     try {
@@ -1238,7 +1282,7 @@ function Sd2MonthlyDialogNew({ id, period, projectCode, projectName, onClose }: 
   return <div className="sd2-overlay" role="dialog" aria-modal="true"><section className="sd2-dialog">
     <div className="sd2-dialog-head">
       <div><h2>Podklad SD2 — {period}. období</h2><p>Měsíční údaje se zobrazí v příslušném období jako podklad před ŽoP.</p></div>
-      <div className="sd2-attachments"><label className="upload-button">{analyzingPayroll ? "Načítám mzdové podklady…" : "Načíst výplatní listy a pásky PDF"}<input type="file" accept=".pdf,application/pdf" multiple disabled={analyzingPayroll} onChange={e => e.target.files?.length && analyzePayroll(Array.from(e.target.files))} /></label>{!isMostyProject && (driveToken ? <label className="upload-button">{uploading ? "Ukládám archiv…" : "Vybrat archiv ZIP / RAR"}<input type="file" accept=".zip,.rar" disabled={uploading} onChange={e => e.target.files?.[0] && upload(e.target.files[0])} /></label> : <button className="upload-button" onClick={connectDrive}>Připojit Google Drive</button>)}{uploadNotice && <small className="sd2-upload-notice">{uploadNotice}</small>}</div>
+      <div className="sd2-attachments"><label className="upload-button">{analyzingPayroll ? "Načítám mzdové podklady…" : "Načíst výplatní listy a pásky PDF"}<input type="file" accept=".pdf,application/pdf" multiple disabled={analyzingPayroll} onChange={e => e.target.files?.length && analyzePayroll(Array.from(e.target.files))} /></label>{uploadNotice && <small className="sd2-upload-notice">{uploadNotice}</small>}</div>
       <button className="secondary" onClick={onClose}>Zavřít</button>
     </div>
     {error && <div className="alert sd2-error">{error}</div>}
@@ -1253,14 +1297,14 @@ function Sd2MonthlyDialogNew({ id, period, projectCode, projectName, onClose }: 
       </tbody></table></div><div className="payroll-preview-actions"><button type="button" onClick={applyPayroll}>Převzít do SD-2</button></div>
     </section>}
     {!months.length && !payrollPreview && <div className="sd2-empty"><b>V tomto období zatím nejsou měsíční údaje.</b><span>Nahrajte PDF s výplatními listy; měsíc se načte automaticky.</span></div>}
-    <div className="sd2-grid-wrap"><table className="sd2-grid"><thead><tr><th>Položka</th>{months.map(month => <th key={month}>{new Date(`${month}T00:00:00Z`).toLocaleDateString("cs-CZ", { month: "long", year: "numeric" })}</th>)}</tr></thead><tbody>{sd2Codes.map(code => <tr key={code}><th><b>{code}</b><small>{SD2_ITEM_NAMES[code] || sd2Names[code]}</small></th>{months.map(month => { const noContributions = code === "1.1.3.1"; return <td key={month}><label>Hrubá mzda / odměna<input type="number" step="0.01" value={read(code, month, "gross_wage")} onChange={e => set(code, month, "gross_wage", e.target.value)} /></label>{!noContributions && <label>Odvody zaměstnavatele<input type="number" step="0.01" value={read(code, month, "employer_contributions")} onChange={e => set(code, month, "employer_contributions", e.target.value)} /></label>}<label>Jiné výdaje s odvody<input type="number" step="0.01" value={read(code, month, "other_with_contributions")} onChange={e => set(code, month, "other_with_contributions", e.target.value)} /></label><label>Jiné výdaje bez odvodů<input type="number" step="0.01" value={read(code, month, "other_without_contributions")} onChange={e => set(code, month, "other_without_contributions", e.target.value)} /></label><label>Datum úhrady<input type="date" value={read(code, month, "payment_date")} onChange={e => set(code, month, "payment_date", e.target.value)} /></label></td>; })}</tr>)}</tbody></table></div>
+    <div className="sd2-grid-wrap"><table className="sd2-grid"><thead><tr><th>Položka</th>{months.map(month => <th key={month}>{new Date(`${month}T00:00:00Z`).toLocaleDateString("cs-CZ", { month: "long", year: "numeric" })}</th>)}</tr></thead><tbody>{displayRows.map(row => <tr key={row.key}><th><b>{row.code}</b><small>{row.employeeName || SD2_ITEM_NAMES[row.code] || sd2Names[row.code]}</small>{row.employeeName && <small className="sd2-position-name">{SD2_ITEM_NAMES[row.code] || sd2Names[row.code]}</small>}</th>{months.map(month => { const noContributions = row.code.startsWith("1.1.3."); return <td key={month}><label>Hrubá mzda / odměna<input type="number" step="0.01" value={read(row, month, "gross_wage")} onChange={e => set(row, month, "gross_wage", e.target.value)} /></label>{!noContributions && <label>Odvody zaměstnavatele<input type="number" step="0.01" value={read(row, month, "employer_contributions")} onChange={e => set(row, month, "employer_contributions", e.target.value)} /></label>}<label>Jiné výdaje s odvody<input type="number" step="0.01" value={read(row, month, "other_with_contributions")} onChange={e => set(row, month, "other_with_contributions", e.target.value)} /></label><label>Jiné výdaje bez odvodů<input type="number" step="0.01" value={read(row, month, "other_without_contributions")} onChange={e => set(row, month, "other_without_contributions", e.target.value)} /></label><label>Datum úhrady<input type="date" value={read(row, month, "payment_date")} onChange={e => set(row, month, "payment_date", e.target.value)} /></label></td>; })}</tr>)}</tbody></table></div>
     <button className="sd2-details-toggle secondary" type="button" onClick={() => setXmlDetails(value => !value)}>{xmlDetails ? "Skrýt údaje pro XML" : "Doplnit údaje pro XML"}</button>
     {xmlDetails && <section className="sd2-xml-panel">
       <div className="sd2-xml-heading"><div><h3>Údaje pro import XML do IS KP21+</h3><p>Vyplňte údaje u řádků, ve kterých vykazujete výdaj. Technické ID vytvoří aplikace automaticky.</p></div><label>Výchozí IČ subjektu<div className="sd2-subject-apply"><input inputMode="numeric" maxLength={10} value={defaultSubjectId} onChange={e => setDefaultSubjectId(e.target.value.replace(/\D/g, ""))} /><button type="button" className="secondary" onClick={applySubjectId}>Použít všude</button></div></label></div>
-      <div className="sd2-xml-table-wrap"><table className="sd2-xml-table"><thead><tr><th>Měsíc</th><th>Položka</th><th>IČ</th><th>Jméno</th><th>Příjmení</th><th>Pracovní vztah</th><th>Fond hodin</th><th>Hodiny projektu</th><th>Datum úhrady</th><th>Popis</th></tr></thead><tbody>{sd2Codes.flatMap(code => months.map(month => <tr key={`${code}-${month}`}><td>{new Date(`${month}T00:00:00Z`).toLocaleDateString("cs-CZ", { month: "2-digit", year: "numeric" })}</td><td><b>{code}</b></td><td><input inputMode="numeric" maxLength={10} value={read(code, month, "subject_id")} onChange={e => set(code, month, "subject_id", e.target.value.replace(/\D/g, ""))} /></td><td><input value={read(code, month, "first_name")} onChange={e => set(code, month, "first_name", e.target.value)} /></td><td><input value={read(code, month, "last_name")} onChange={e => set(code, month, "last_name", e.target.value)} /></td><td><select value={employmentFor(code)} disabled><option value="Smlouva">Pracovní smlouva</option><option value="DPC">DPČ</option><option value="DPP">DPP od roku 2025</option></select></td><td><input type="number" min="0" step="0.01" value={read(code, month, "work_time_fund")} onChange={e => set(code, month, "work_time_fund", e.target.value)} /></td><td><input type="number" min="0" step="0.01" value={read(code, month, "project_hours")} onChange={e => set(code, month, "project_hours", e.target.value)} /></td><td><input type="date" value={read(code, month, "payment_date")} onChange={e => set(code, month, "payment_date", e.target.value)} /></td><td><input maxLength={2000} value={read(code, month, "description")} onChange={e => set(code, month, "description", e.target.value)} /></td></tr>))}</tbody></table></div>
+      <div className="sd2-xml-table-wrap"><table className="sd2-xml-table"><thead><tr><th>Měsíc</th><th>Položka</th><th>IČ</th><th>Jméno</th><th>Příjmení</th><th>Pracovní vztah</th><th>Fond hodin</th><th>Hodiny projektu</th><th>Datum úhrady</th><th>Popis</th></tr></thead><tbody>{xmlEntries.map(({ entry, index }) => <tr key={entry.sd2_entry_id || `${entry.budget_item_code}-${entry.month}-${index}`}><td>{new Date(`${entry.month}T00:00:00Z`).toLocaleDateString("cs-CZ", { month: "2-digit", year: "numeric" })}</td><td><b>{entry.budget_item_code}</b></td><td><input inputMode="numeric" maxLength={10} value={entry.subject_id || ""} onChange={e => setXmlEntry(index, "subject_id", e.target.value.replace(/\D/g, ""))} /></td><td><input value={entry.first_name || ""} onChange={e => setXmlEntry(index, "first_name", e.target.value)} /></td><td><input value={entry.last_name || ""} onChange={e => setXmlEntry(index, "last_name", e.target.value)} /></td><td><select value={employmentFor(entry.budget_item_code)} disabled><option value="Smlouva">Pracovní smlouva</option><option value="DPC">DPČ</option><option value="DPP">DPP od roku 2025</option></select></td><td><input type="number" min="0" step="0.01" value={entry.work_time_fund || 0} onChange={e => setXmlEntry(index, "work_time_fund", e.target.value)} /></td><td><input type="number" min="0" step="0.01" value={entry.project_hours || 0} onChange={e => setXmlEntry(index, "project_hours", e.target.value)} /></td><td><input type="date" value={entry.payment_date || ""} onChange={e => setXmlEntry(index, "payment_date", e.target.value)} /></td><td><input maxLength={2000} value={entry.description || ""} onChange={e => setXmlEntry(index, "description", e.target.value)} /></td></tr>)}</tbody></table>{xmlEntries.length === 0 && <div className="info">Nejsou načtené žádné záznamy pro XML.</div>}</div>
     </section>}
     {error && <div className="alert sd2-error sd2-footer-error">{error}</div>}
-    <div className="sd2-save">{projectName.trim().toLocaleLowerCase("cs-CZ") === "mosty v rodině" && <button className="danger sd2-clear-period" type="button" onClick={clearPeriod} disabled={saving}>Smazat vše</button>}<button className="secondary" type="button" onClick={() => setXmlDetails(true)}>Kontrola údajů XML</button><button type="button" onClick={exportXml} disabled={saving}>Stáhnout XML SD-2</button><button type="button" onClick={() => save()} disabled={saving}>{saving ? "Ukládám…" : "Uložit podklad SD2"}</button></div>
+    <div className="sd2-save"><button className="danger sd2-clear-period" type="button" onClick={clearPeriod} disabled={saving}>Smazat vše</button><button className="secondary" type="button" onClick={() => setXmlDetails(true)}>Kontrola údajů XML</button><button type="button" onClick={exportXml} disabled={saving}>Stáhnout XML SD-2</button><button type="button" onClick={() => save()} disabled={saving}>{saving ? "Ukládám…" : "Uložit podklad SD2"}</button></div>
   </section></div>;
 }
 function BudgetWorkerSettings({ id, versionId, periodCount, onClose }: { id: string; versionId?: string; periodCount: number; onClose: () => void }) {

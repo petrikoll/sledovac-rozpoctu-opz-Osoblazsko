@@ -221,15 +221,19 @@ def test_sd2_keeps_multiple_workers_in_same_budget_item_and_month():
     import app.main as main_module
     main_module.sd2_budget_items = lambda _: [BudgetItem(code="1.1.1.1", name="Pracovníci", level=4, total_amount=100000, category="direct", is_leaf=True, source_row_number=1)]
     try:
-        response = client.put(f"/api/projects/{project_id}/sd2-monthly", json={"entries": [
+        payload = {"entries": [
             {"monitoring_period": 1, "month": "2026-06-01", "budget_item_code": "1.1.1.1", "first_name": "Jana", "last_name": "První", "gross_wage": 20000},
             {"monitoring_period": 1, "month": "2026-06-01", "budget_item_code": "1.1.1.1", "first_name": "Petr", "last_name": "Druhý", "gross_wage": 25000},
-        ]})
+        ]}
+        response = client.put(f"/api/projects/{project_id}/sd2-monthly", json=payload)
+        repeated = client.put(f"/api/projects/{project_id}/sd2-monthly", json=payload)
     finally:
         main_module.sd2_budget_items = original
 
     assert response.status_code == 200
+    assert repeated.status_code == 200
     assert [(item["first_name"], item["gross_wage"]) for item in response.json()] == [("Jana", "20000"), ("Petr", "25000")]
+    assert len([entry for entry in repo.sd2_entries[project_id] if entry.monitoring_period == 1]) == 2
 
 
 def test_sd2_budget_items_exclude_summary_and_non_personnel_rows():

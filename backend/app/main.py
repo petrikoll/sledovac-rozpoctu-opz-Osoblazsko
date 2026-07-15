@@ -604,18 +604,15 @@ def save_sd2_monthly(project_id: str, body: dict, user=Depends(require_editor)):
         entry.employment_type = sd2_employment_type(entry.budget_item_code)
     period = entries[0].monitoring_period
     if any(entry.monitoring_period != period for entry in entries): raise HTTPException(422, "Uložte najednou pouze jedno období.")
-    existing = repo.sd2_entries[project_id]
-    index = {x.sd2_entry_id: i for i, x in enumerate(existing)}
-    appended = []
-    for entry in entries:
-        if entry.sd2_entry_id in index:
-            existing[index[entry.sd2_entry_id]] = entry
-            if google_repo: google_repo.update_record("SD2_MESICE", "sd2_entry_id", entry.sd2_entry_id, entry.model_dump())
-        else:
-            existing.append(entry); appended.append(entry)
-    if google_repo and appended:
-        google_repo.append_records("SD2_MESICE", [{**entry.model_dump(), "project_id": project_id, "created_at": datetime.utcnow().isoformat(), "created_by": user["email"]} for entry in appended])
-    return [entry for entry in existing if entry.monitoring_period == period]
+    existing_period = [entry for entry in repo.sd2_entries[project_id] if entry.monitoring_period == period]
+    if google_repo:
+        for old_entry in existing_period:
+            google_repo.delete_record("SD2_MESICE", "sd2_entry_id", old_entry.sd2_entry_id)
+        google_repo.append_records("SD2_MESICE", [{**entry.model_dump(), "project_id": project_id,
+            "created_at": datetime.utcnow().isoformat(), "created_by": user["email"]} for entry in entries])
+    repo.sd2_entries[project_id] = [entry for entry in repo.sd2_entries[project_id]
+                                    if entry.monitoring_period != period] + entries
+    return entries
 
 
 @app.delete("/api/projects/{project_id}/sd2-period", status_code=204)
