@@ -248,6 +248,14 @@ def test_sd2_budget_items_exclude_summary_and_non_personnel_rows():
     assert [item.code for item in sd2_budget_items(project_id)] == ["1.1.3.1", "1.1.1.1.1"]
 
 
+def test_sd2_employment_type_is_derived_from_budget_code():
+    from app.main import sd2_employment_type
+
+    assert sd2_employment_type("1.1.1.7") == "Smlouva"
+    assert sd2_employment_type("1.1.2.1") == "DPC"
+    assert sd2_employment_type("1.1.3.4") == "DPP"
+
+
 def test_sd2_xml_download_does_not_save_entries(monkeypatch):
     project = client.post("/api/projects", json={"project_code": "CZ.XML", "project_name": "XML", "recipient_name": "P"}).json()
     project_id = project["project_id"]

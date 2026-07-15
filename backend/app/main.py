@@ -480,6 +480,14 @@ SD2_PROJECT_CODE = "CZ.03.02.01/00/25_106/0006125"
 SD2_CODES = {"1.1.1.1", "1.1.1.2", "1.1.1.3", "1.1.2.1", "1.1.3.1"}
 
 
+def sd2_employment_type(code: str) -> str:
+    if code.startswith("1.1.2."):
+        return "DPC"
+    if code.startswith("1.1.3."):
+        return "DPP"
+    return "Smlouva"
+
+
 def sd2_budget_items(project_id: str):
     p = repo.project_data[project_id]
     version = next((value for value in repo.budgets[project_id] if value["version_id"] == p.active_budget_version_id), None)
@@ -592,6 +600,8 @@ def save_sd2_monthly(project_id: str, body: dict, user=Depends(require_editor)):
     allowed_codes = {item.code for item in sd2_budget_items(project_id)}
     if not entries or any(entry.budget_item_code not in allowed_codes for entry in entries):
         raise HTTPException(422, "Neplatná položka podkladu SD2.")
+    for entry in entries:
+        entry.employment_type = sd2_employment_type(entry.budget_item_code)
     period = entries[0].monitoring_period
     if any(entry.monitoring_period != period for entry in entries): raise HTTPException(422, "Uložte najednou pouze jedno období.")
     existing = repo.sd2_entries[project_id]
@@ -629,6 +639,8 @@ def delete_sd2_period(project_id: str, period: int, user=Depends(require_editor)
 def download_sd2_xml(project_id: str, period: int, user=Depends(current_user)):
     project(project_id, user)
     entries = [entry for entry in repo.sd2_entries[project_id] if entry.monitoring_period == period]
+    for entry in entries:
+        entry.employment_type = sd2_employment_type(entry.budget_item_code)
     try:
         content = build_sd2_xml(entries)
     except ValueError as exc:
@@ -644,6 +656,8 @@ def create_sd2_xml(project_id: str, period: int, body: dict, user=Depends(curren
     allowed_codes = {item.code for item in sd2_budget_items(project_id)}
     if any(entry.budget_item_code not in allowed_codes for entry in entries):
         raise HTTPException(422, "XML obsahuje neplatnou rozpočtovou položku.")
+    for entry in entries:
+        entry.employment_type = sd2_employment_type(entry.budget_item_code)
     if any(entry.monitoring_period != period for entry in entries):
         raise HTTPException(422, "XML lze vytvořit pouze pro jedno monitorovací období.")
     try:
