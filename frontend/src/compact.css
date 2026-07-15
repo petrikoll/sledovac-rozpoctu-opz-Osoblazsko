@@ -31,7 +31,7 @@ input, select { padding: 8px 9px; }
 .table-wrap { margin: 10px 0; max-height: 520px; }
 .table-wrap th, .table-wrap td { padding: 7px 9px; font-size: 12px; }
 .budget-overview .table-wrap table { table-layout: fixed; min-width: 1120px; }
-.budget-overview .table-wrap th:first-child,.budget-overview .table-wrap td:first-child { width: 32%; overflow: hidden; text-overflow: ellipsis; }
+.budget-overview .table-wrap thead > tr:first-child > th:first-child,.budget-overview .table-wrap tbody > tr > td:first-child { width: 32%; overflow: hidden; text-overflow: ellipsis; }
 .budget-overview .table-wrap th:not(:first-child),.budget-overview .table-wrap td:not(:first-child) { padding-left: 5px; padding-right: 5px; font-size: 11px; }
 .budget-overview .period-col { width: 7.2%; }
 .budget-overview .sd2-period-button { background: #dcefe4; color: #0d4f37; box-shadow: inset 0 -3px 0 #27945b; transition: background .15s ease, transform .15s ease; }
@@ -46,8 +46,8 @@ input, select { padding: 8px 9px; }
 .budget-overview .month-col { width: 90px; min-width: 90px; text-align: right; white-space: nowrap; }
 .budget-overview .budget-month-head .month-col { text-align: center; font-size: 10px; }
 .budget-overview .table-wrap table.months-expanded-table { table-layout: auto; }
-.budget-overview .months-expanded-table th:first-child,.budget-overview .months-expanded-table td:first-child { width: 340px; min-width: 340px; }
-.budget-overview .months-expanded-table th:nth-child(2),.budget-overview .months-expanded-table td:nth-child(2) { width: 110px; min-width: 110px; }
+.budget-overview .months-expanded-table thead > tr:first-child > th:first-child,.budget-overview .months-expanded-table tbody > tr > td:first-child { width: 340px; min-width: 340px; }
+.budget-overview .months-expanded-table thead > tr:first-child > th:nth-child(2),.budget-overview .months-expanded-table tbody > tr > td:nth-child(2) { width: 110px; min-width: 110px; }
 .budget-overview .months-expanded-table .period-col { width: 90px; min-width: 90px; }
 .budget-overview .months-expanded-table .month-col { width: 105px; min-width: 105px; }
 .sd2-overlay { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 20px; background: #16261f99; }
