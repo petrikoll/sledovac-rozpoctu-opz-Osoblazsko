@@ -10,6 +10,7 @@ from contextvars import ContextVar
 from datetime import date, datetime
 from decimal import Decimal
 from io import BytesIO
+from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
@@ -57,6 +58,9 @@ PROJECT_ONLY_USERS = {
     "mb_ucetni@seznam.cz": "CZ.03.02.01/00/25_106/0006125",
 }
 
+MAS_PARTNER_PROJECT_NAME = "reseni oblasti dluhove problematiky na uzemi mas"
+MAS_PARTNER_SUBJECT_ID = "01937324"
+
 
 def current_user(authorization: str | None = Header(default=None)) -> dict:
     client_id = os.getenv("GOOGLE_CLIENT_ID")
@@ -100,6 +104,26 @@ def can_view_project(project_id: str, user: dict) -> bool:
         return bool(item and item.recipient_name.strip().casefold() == recipient_only)
     allowed = repo.project_access.get(project_id, set())
     return not allowed or email in allowed
+
+
+def can_use_payroll_batch(user: dict) -> bool:
+    if user.get("role") == "admin":
+        return True
+    if user.get("role") != "editor":
+        return False
+    cech = normalized_name("Osoblažský cech, z.ú.").strip(".,")
+    return any(
+        can_view_project(item.project_id, user)
+        and (normalized_name(item.recipient_name).strip(".,") == cech
+             or normalized_name(item.project_name).strip(".,") == MAS_PARTNER_PROJECT_NAME)
+        for item in repo.projects()
+    )
+
+
+def require_payroll_batch_access(user=Depends(require_editor)) -> dict:
+    if not can_use_payroll_batch(user):
+        raise HTTPException(403, "Hromadný import je určen pouze uživatelům projektů Osoblažského cechu.")
+    return user
 
 
 def project(project_id: str, user: dict | None = None) -> Project:
@@ -510,6 +534,26 @@ def normalized_name(value: str) -> str:
     return " ".join(parts)
 
 
+def sd2_subject_id_for_project(selected_project: Project) -> str | None:
+    """Return the paying partner's IČO for project-specific SD-2 exports."""
+    if normalized_name(selected_project.project_name).strip(".,") == MAS_PARTNER_PROJECT_NAME:
+        return MAS_PARTNER_SUBJECT_ID
+    return None
+
+
+def enforce_sd2_subject(selected_project: Project, entries: list[Sd2MonthlyEntry]) -> None:
+    subject_id = sd2_subject_id_for_project(selected_project)
+    if subject_id:
+        for entry in entries:
+            entry.subject_id = subject_id
+
+
+def sd2_xml_content_disposition(selected_project: Project, period: int) -> str:
+    safe_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", selected_project.project_name).strip(" .")
+    file_name = f"SD-2_MO{period}_{safe_name}.xml"
+    return f'attachment; filename="SD-2_MO{period}.xml"; filename*=UTF-8\'\'{quote(file_name)}'
+
+
 def _mosty_payroll_rows(rows: list[dict], allowed: set[str]) -> list[dict]:
     """Convert payroll-list components into final SD-2 records for Mosty v rodině."""
     groups: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
@@ -591,19 +635,22 @@ def _mosty_payroll_rows(rows: list[dict], allowed: set[str]) -> list[dict]:
 
 @app.get("/api/projects/{project_id}/sd2-monthly")
 def sd2_monthly(project_id: str, period: int, user=Depends(current_user)):
-    project(project_id, user)
-    return [entry for entry in repo.sd2_entries[project_id] if entry.monitoring_period == period]
+    selected_project = project(project_id, user)
+    entries = [entry for entry in repo.sd2_entries[project_id] if entry.monitoring_period == period]
+    enforce_sd2_subject(selected_project, entries)
+    return entries
 
 
 @app.put("/api/projects/{project_id}/sd2-monthly")
 def save_sd2_monthly(project_id: str, body: dict, user=Depends(require_editor)):
-    project(project_id, user)
+    selected_project = project(project_id, user)
     entries = [Sd2MonthlyEntry.model_validate(value) for value in body.get("entries", [])]
     allowed_codes = {item.code for item in sd2_budget_items(project_id)}
     if not entries or any(entry.budget_item_code not in allowed_codes for entry in entries):
         raise HTTPException(422, "Neplatná položka podkladu SD2.")
     for entry in entries:
         entry.employment_type = sd2_employment_type(entry.budget_item_code)
+    enforce_sd2_subject(selected_project, entries)
     period = entries[0].monitoring_period
     if any(entry.monitoring_period != period for entry in entries): raise HTTPException(422, "Uložte najednou pouze jedno období.")
     existing_period = [entry for entry in repo.sd2_entries[project_id] if entry.monitoring_period == period]
@@ -636,34 +683,36 @@ def delete_sd2_period(project_id: str, period: int, user=Depends(require_editor)
 
 @app.get("/api/projects/{project_id}/sd2-xml")
 def download_sd2_xml(project_id: str, period: int, user=Depends(current_user)):
-    project(project_id, user)
+    selected_project = project(project_id, user)
     entries = [entry for entry in repo.sd2_entries[project_id] if entry.monitoring_period == period]
+    enforce_sd2_subject(selected_project, entries)
     for entry in entries:
         entry.employment_type = sd2_employment_type(entry.budget_item_code)
     try:
         content = build_sd2_xml(entries)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-    headers = {"Content-Disposition": f'attachment; filename="SD-2_obdobi_{period}.xml"'}
+    headers = {"Content-Disposition": sd2_xml_content_disposition(selected_project, period)}
     return StreamingResponse(BytesIO(content), media_type="application/xml; charset=utf-8", headers=headers)
 
 
 @app.post("/api/projects/{project_id}/sd2-xml")
 def create_sd2_xml(project_id: str, period: int, body: dict, user=Depends(current_user)):
-    project(project_id, user)
+    selected_project = project(project_id, user)
     entries = [Sd2MonthlyEntry.model_validate(value) for value in body.get("entries", [])]
     allowed_codes = {item.code for item in sd2_budget_items(project_id)}
     if any(entry.budget_item_code not in allowed_codes for entry in entries):
         raise HTTPException(422, "XML obsahuje neplatnou rozpočtovou položku.")
     for entry in entries:
         entry.employment_type = sd2_employment_type(entry.budget_item_code)
+    enforce_sd2_subject(selected_project, entries)
     if any(entry.monitoring_period != period for entry in entries):
         raise HTTPException(422, "XML lze vytvořit pouze pro jedno monitorovací období.")
     try:
         content = build_sd2_xml(entries)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-    headers = {"Content-Disposition": f'attachment; filename="SD-2_obdobi_{period}.xml"'}
+    headers = {"Content-Disposition": sd2_xml_content_disposition(selected_project, period)}
     return StreamingResponse(BytesIO(content), media_type="application/xml; charset=utf-8", headers=headers)
 
 
@@ -930,7 +979,7 @@ def _batch_entry(row: dict, period: int) -> Sd2MonthlyEntry:
 
 
 @app.post("/api/payroll-batch/analyze")
-async def analyze_payroll_batch(file: UploadFile = File(...), user=Depends(require_editor)):
+async def analyze_payroll_batch(file: UploadFile = File(...), user=Depends(require_payroll_batch_access)):
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(415, "Vyberte ZIP s výplatními páskami.")
     data = await file.read(50 * 1024 * 1024 + 1)
@@ -940,7 +989,7 @@ async def analyze_payroll_batch(file: UploadFile = File(...), user=Depends(requi
 
 
 @app.post("/api/payroll-batch/import")
-async def import_payroll_batch(file: UploadFile = File(...), user=Depends(require_editor)):
+async def import_payroll_batch(file: UploadFile = File(...), user=Depends(require_payroll_batch_access)):
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(415, "Vyberte ZIP s výplatními páskami.")
     data = await file.read(50 * 1024 * 1024 + 1)
@@ -954,6 +1003,7 @@ async def import_payroll_batch(file: UploadFile = File(...), user=Depends(requir
     for group in ready:
         project_id = str(group["project_id"]); period = int(group["monitoring_period"])
         entries = [_batch_entry(row, period) for row in group["rows"]]
+        enforce_sd2_subject(repo.project_data[project_id], entries)
         keys = {(entry.month, entry.budget_item_code,
                  normalized_name(f"{entry.first_name} {entry.last_name}")) for entry in entries}
         existing = repo.sd2_entries[project_id]
@@ -1045,6 +1095,7 @@ def budget_status(project_id: str, version_id: str | None = None, user=Depends(c
     if not version: return []
     items = version["analysis"].items; by_code = {item.code: item for item in items}
     spent: dict[str, Decimal] = {code: Decimal("0") for code in by_code}; periods: dict[str, dict[str, Decimal]] = {code: {} for code in by_code}
+    months: dict[str, dict[str, dict[str, Decimal]]] = {code: {} for code in by_code}
     for payment in repo.payments[project_id]:
         if payment.is_advance_payment: continue
         period = str(max(1, payment.sequence_number - 1))
@@ -1061,17 +1112,26 @@ def budget_status(project_id: str, version_id: str | None = None, user=Depends(c
             periods[lump_item.code][period] = periods[lump_item.code].get(period, Decimal("0")) + payment.approved_lump_sum
     submitted_periods = {max(1, payment.sequence_number - 1) for payment in repo.payments[project_id] if not payment.is_advance_payment}
     for entry in repo.sd2_entries[project_id]:
-        if entry.monitoring_period in submitted_periods or entry.budget_item_code not in spent:
+        if entry.budget_item_code not in spent:
             continue
         amount = entry.total_amount
-        spent[entry.budget_item_code] += amount
         period = str(entry.monitoring_period)
+        month = entry.month.isoformat()
+        period_months = months[entry.budget_item_code].setdefault(period, {})
+        period_months[month] = period_months.get(month, Decimal("0")) + amount
+        if entry.monitoring_period in submitted_periods:
+            continue
+        spent[entry.budget_item_code] += amount
         periods[entry.budget_item_code][period] = periods[entry.budget_item_code].get(period, Decimal("0")) + amount
     # Souhrny jsou vždy odvozené z bezprostředních potomků.
     for item in sorted(items, key=lambda x: x.level, reverse=True):
         if item.parent_code in spent:
             spent[item.parent_code] += spent[item.code]
             for period, amount in periods[item.code].items(): periods[item.parent_code][period] = periods[item.parent_code].get(period, Decimal("0")) + amount
+            for period, period_months in months[item.code].items():
+                parent_months = months[item.parent_code].setdefault(period, {})
+                for month, amount in period_months.items():
+                    parent_months[month] = parent_months.get(month, Decimal("0")) + amount
     def change_info(item):
         if not item.is_leaf:
             return {"has_budget_change": False, "change_note": ""}
@@ -1087,7 +1147,8 @@ def budget_status(project_id: str, version_id: str | None = None, user=Depends(c
     return [{**item.model_dump(), **change_info(item),
         "budget_version_id": version["version_id"], "cumulative_spent": spent[item.code],
         "remaining": item.total_amount-spent[item.code], "spent_percent": spent[item.code]/item.total_amount*100 if item.total_amount else 0,
-        "expected_final_remaining": item.total_amount-spent[item.code]-item.planned_future_spending, "periods": periods[item.code]}
+        "expected_final_remaining": item.total_amount-spent[item.code]-item.planned_future_spending,
+        "periods": periods[item.code], "months": months[item.code]}
         for item in items]
 
 

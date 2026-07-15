@@ -184,6 +184,20 @@ def test_katfol_can_only_view_osoblazsky_cech_projects():
     assert can_view_project(other["project_id"], user) is False
 
 
+def test_batch_upload_is_limited_to_users_who_can_view_cech_projects():
+    client.post("/api/projects", json={
+        "project_code": "CZ.CECH.BATCH",
+        "project_name": "Projekt Osoblažského cechu pro import",
+        "recipient_name": "Osoblažský cech, z.ú.",
+    })
+    from app.main import can_use_payroll_batch
+
+    assert can_use_payroll_batch({"email": "katfol@email.cz", "role": "editor"}) is True
+    assert can_use_payroll_batch({"email": "emceckovm@gmail.com", "role": "editor"}) is False
+    assert can_use_payroll_batch({"email": "srssjesenik@gmail.com", "role": "editor"}) is False
+    assert can_use_payroll_batch({"email": "any-reader@example.com", "role": "user"}) is False
+
+
 def test_batch_payroll_zip_routes_and_replaces_same_worker(monkeypatch):
     project = client.post("/api/projects", json={
         "project_code": "CZ.BATCH.CECH",
@@ -335,6 +349,27 @@ def test_delete_sd2_period_keeps_other_periods():
     assert [entry["monitoring_period"] for entry in repo.sd2_attachments[project_id]] == [2]
 
 
+def test_budget_status_contains_sd2_months_for_expandable_periods():
+    from app.models import BudgetItem
+
+    project = client.post("/api/projects", json={"project_code": "CZ.MONTHS", "project_name": "Měsíce", "recipient_name": "P"}).json()
+    project_id = project["project_id"]
+    repo.project_data[project_id].active_budget_version_id = "v1"
+    repo.budgets[project_id] = [{"version_id": "v1", "analysis": SimpleNamespace(items=[
+        BudgetItem(code="1.1.1.1", name="Pracovník", level=4, total_amount=100000,
+                   category="direct", is_leaf=True, source_row_number=1),
+    ])}]
+    repo.sd2_entries[project_id] = [
+        Sd2MonthlyEntry(monitoring_period=1, month=date(2026, 5, 1), budget_item_code="1.1.1.1", gross_wage=100, employer_contributions=34),
+        Sd2MonthlyEntry(monitoring_period=1, month=date(2026, 6, 1), budget_item_code="1.1.1.1", gross_wage=200, employer_contributions=68),
+    ]
+
+    response = client.get(f"/api/projects/{project_id}/budget-status")
+
+    assert response.status_code == 200
+    assert response.json()[0]["months"]["1"] == {"2026-05-01": 134, "2026-06-01": 268}
+
+
 def test_sd2_keeps_multiple_workers_in_same_budget_item_and_month():
     project = client.post("/api/projects", json={"project_code": "CZ.MULTI", "project_name": "Více pracovníků", "recipient_name": "P"}).json()
     project_id = project["project_id"]
@@ -401,6 +436,33 @@ def test_sd2_xml_download_does_not_save_entries(monkeypatch):
     assert response.status_code == 200
     assert b"<ns2:TYPDOKLADU>Mzdy</ns2:TYPDOKLADU>" in response.content
     assert repo.sd2_entries[project_id] == []
+
+
+def test_mas_partner_project_always_uses_osoblazsky_cech_ico(monkeypatch):
+    project = client.post("/api/projects", json={
+        "project_code": "CZ.MAS",
+        "project_name": "Řešení oblasti dluhové problematiky na území MAS",
+        "recipient_name": "Příjemce projektu MAS",
+    }).json()
+    project_id = project["project_id"]
+    import app.main as main
+    monkeypatch.setattr(main, "sd2_budget_items", lambda _project_id: [SimpleNamespace(code="1.1.1.1")])
+    payload = {"entries": [{
+        "monitoring_period": 1, "month": "2026-06-01", "budget_item_code": "1.1.1.1",
+        "gross_wage": 1000, "employer_contributions": 338, "payment_date": "2026-07-07",
+        "subject_id": "12345678", "last_name": "Nováková", "first_name": "Jana",
+        "work_time_fund": 168, "project_hours": 80,
+    }]}
+
+    saved = client.put(f"/api/projects/{project_id}/sd2-monthly", json=payload)
+    exported = client.post(f"/api/projects/{project_id}/sd2-xml?period=1", json=payload)
+
+    assert saved.status_code == 200
+    assert saved.json()[0]["subject_id"] == "01937324"
+    assert exported.status_code == 200
+    assert b"<ns2:IC>01937324</ns2:IC>" in exported.content
+    assert b"<ns2:IC>12345678</ns2:IC>" not in exported.content
+    assert "filename*=UTF-8''SD-2_MO1_%C5%98e%C5%A1en%C3%AD" in exported.headers["content-disposition"]
 
 
 def test_health_and_project_crud():
