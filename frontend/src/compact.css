@@ -234,6 +234,8 @@ main > section.panel:has(input[aria-label="PDF žádosti o platbu"]) .payment-li
 .payroll-batch-head { display: flex; justify-content: space-between; align-items: center; gap: 18px; }
 .payroll-batch-head h2 { margin: 3px 0 4px; font-size: 20px; }
 .payroll-batch-head p, .payroll-batch-file { margin: 0; color: #63756d; font-size: 13px; }
+.payroll-batch-upload-options { display: flex; flex: 0 0 auto; gap: 8px; align-items: center; }
+.payroll-batch-upload-options .upload-button,.payroll-batch-upload-options button { margin: 0; white-space: nowrap; }
 .payroll-batch-file { margin-top: 10px; }
 .payroll-batch-groups { display: grid; gap: 8px; margin-top: 12px; }
 .payroll-batch-groups article { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 16px; padding: 10px 12px; border: 1px solid #ccd8d1; border-radius: 8px; background: #f7faf8; }
@@ -247,4 +249,4 @@ main > section.panel:has(input[aria-label="PDF žádosti o platbu"]) .payment-li
 .payroll-batch-groups article > a { grid-column: 1 / -1; width: max-content; font-size: 12px; }
 .payroll-batch-actions { display: flex; justify-content: space-between; align-items: center; gap: 14px; margin-top: 12px; }
 .payroll-batch-actions span { color: #5f7068; font-size: 12px; }
-@media (max-width: 700px) { .payroll-batch-head, .payroll-batch-actions { align-items: stretch; flex-direction: column; } .payroll-batch-head .upload-button, .payroll-batch-actions button { align-self: flex-start; } }
+@media (max-width: 700px) { .payroll-batch-head, .payroll-batch-actions { align-items: stretch; flex-direction: column; } .payroll-batch-upload-options { align-items: stretch; flex-direction: column; } .payroll-batch-head .upload-button, .payroll-batch-upload-options button, .payroll-batch-actions button { align-self: flex-start; } }

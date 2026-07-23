@@ -167,6 +167,68 @@ async function uploadSd2ArchiveToUserDrive(file: File, projectId: string, period
   if (!response.ok) throw new Error(await googleDriveError(response));
   return (await response.json() as { id: string }).id;
 }
+
+let googlePickerPromise: Promise<void> | null = null;
+function loadGooglePicker() {
+  if (window.google?.picker) return Promise.resolve();
+  if (googlePickerPromise) return googlePickerPromise;
+  googlePickerPromise = new Promise<void>((resolve, reject) => {
+    const loadPickerModule = () => {
+      if (!window.gapi) { reject(new Error("Google Picker se nepodařilo načíst.")); return; }
+      window.gapi.load("picker", { callback: resolve, onerror: () => reject(new Error("Google Picker se nepodařilo načíst.")) });
+    };
+    const existing = document.querySelector<HTMLScriptElement>('script[data-google-picker="true"]');
+    if (existing) { existing.addEventListener("load", loadPickerModule, { once: true }); existing.addEventListener("error", () => reject(new Error("Google Picker se nepodařilo načíst.")), { once: true }); return; }
+    const script = document.createElement("script");
+    script.src = "https://apis.google.com/js/api.js";
+    script.async = true;
+    script.dataset.googlePicker = "true";
+    script.onload = loadPickerModule;
+    script.onerror = () => reject(new Error("Google Picker se nepodařilo načíst."));
+    document.head.appendChild(script);
+  });
+  return googlePickerPromise;
+}
+
+async function selectZipFromGoogleDrive(apiKey: string, appId: string): Promise<File | null> {
+  const accessToken = await requestDriveAccessToken();
+  await loadGooglePicker();
+  const picker = window.google?.picker;
+  if (!picker) throw new Error("Google Picker není dostupný.");
+  const selected = await new Promise<{ id: string; name: string; mimeType: string } | null>((resolve) => {
+    const view = new picker.DocsView(picker.ViewId.DOCS);
+    view.setIncludeFolders(false);
+    view.setSelectFolderEnabled(false);
+    view.setMimeTypes("application/zip,application/x-zip-compressed,application/octet-stream");
+    view.setMode(picker.DocsViewMode.LIST);
+    const builder = new picker.PickerBuilder();
+    builder.addView(view);
+    builder.setAppId(appId);
+    builder.setOAuthToken(accessToken);
+    builder.setDeveloperKey(apiKey);
+    builder.setOrigin(window.location.origin);
+    builder.setTitle("Vyberte ZIP s výplatními páskami");
+    builder.setCallback((data) => {
+      const action = String(data[picker.Response.ACTION] || "");
+      if (action === picker.Action.CANCEL) { resolve(null); return; }
+      if (action !== picker.Action.PICKED) return;
+      const documents = data[picker.Response.DOCUMENTS] as Record<string, unknown>[] | undefined;
+      const document = documents?.[0];
+      resolve(document ? {
+        id: String(document[picker.Document.ID] || ""),
+        name: String(document[picker.Document.NAME] || "vyplatni-pasky.zip"),
+        mimeType: String(document[picker.Document.MIME_TYPE] || "application/zip"),
+      } : null);
+    });
+    builder.build().setVisible(true);
+  });
+  if (!selected) return null;
+  if (!selected.name.toLowerCase().endsWith(".zip")) throw new Error("Vybraný soubor není ZIP.");
+  const response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(selected.id)}?alt=media`, { headers: { Authorization: `Bearer ${accessToken}` } });
+  if (!response.ok) throw new Error(await googleDriveError(response));
+  const blob = await response.blob();
+  return new File([blob], selected.name, { type: selected.mimeType || "application/zip" });
+}
 function tokenEmail(token: string) {
   try {
     return (
@@ -355,6 +417,16 @@ function Projects() {
     } catch (error) { setBatchError(error instanceof Error ? error.message : "ZIP se nepodařilo zkontrolovat."); }
     finally { setBatchLoading(false); }
   }
+  async function analyzeBatchFromDrive() {
+    setBatchError(""); setBatchNotice(""); setBatchLoading(true);
+    try {
+      const config = await api<{ api_key: string; app_id: string }>("/google-picker-config");
+      const file = await selectZipFromGoogleDrive(config.api_key, config.app_id);
+      if (file) await analyzeBatch(file);
+    } catch (error) {
+      setBatchError(error instanceof Error ? error.message : "ZIP se z Google Disku nepodařilo načíst.");
+    } finally { setBatchLoading(false); }
+  }
   async function importBatch() {
     if (!batchFile || !batchResult?.ready_groups) return;
     setBatchError(""); setBatchNotice(""); setBatchLoading(true);
@@ -374,7 +446,7 @@ function Projects() {
         </Link>
       </div>
       {canUseBatch && <section className="panel payroll-batch-panel">
-        <div className="payroll-batch-head"><div><small>HROMADNÝ IMPORT</small><h2>Rozdělit výplatní pásky mezi projekty – určeno pro Osoblažský cech, z.ú.</h2><p>Nahrajte jeden ZIP. Aplikace rozdělí PDF podle pole Výkon, určí projekt, měsíc a monitorovací období.</p></div><label className="upload-button">{batchLoading ? "Zpracovávám…" : "Vybrat ZIP"}<input type="file" accept=".zip,application/zip" disabled={batchLoading} onChange={event => event.target.files?.[0] && analyzeBatch(event.target.files[0])} /></label></div>
+        <div className="payroll-batch-head"><div><small>HROMADNÝ IMPORT</small><h2>Rozdělit výplatní pásky mezi projekty – určeno pro Osoblažský cech, z.ú.</h2><p>Nahrajte jeden ZIP. Aplikace rozdělí PDF podle pole Výkon, určí projekt, měsíc a monitorovací období.</p></div><div className="payroll-batch-upload-options"><label className="upload-button">{batchLoading ? "Zpracovávám…" : "Vybrat ZIP z počítače"}<input type="file" accept=".zip,application/zip" disabled={batchLoading} onChange={event => event.target.files?.[0] && analyzeBatch(event.target.files[0])} /></label><button type="button" className="secondary" disabled={batchLoading} onClick={analyzeBatchFromDrive}>Vybrat z Google Disku</button></div></div>
         {batchFile && <p className="payroll-batch-file"><b>{batchFile.name}</b> · {batchResult ? `${batchResult.total_files} souborů` : "čeká na kontrolu"}</p>}
         {batchError && <div className="alert">{batchError}</div>}
         {batchNotice && <div className="info">{batchNotice}</div>}

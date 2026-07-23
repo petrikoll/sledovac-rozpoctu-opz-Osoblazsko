@@ -154,6 +154,14 @@ def health(): return {"status": "ok", "time": datetime.utcnow().isoformat()}
 def me(user=Depends(current_user)): return user
 
 
+@app.get("/api/google-picker-config")
+def google_picker_config(user=Depends(require_payroll_batch_access)):
+    api_key = os.getenv("GOOGLE_PICKER_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(503, "Výběr z Google Disku zatím není nakonfigurován. Doplňte GOOGLE_PICKER_API_KEY na Renderu.")
+    return {"api_key": api_key, "app_id": os.getenv("GOOGLE_CLOUD_PROJECT_NUMBER", "812727560459").strip()}
+
+
 @app.get("/api/projects")
 def get_projects(user=Depends(current_user)): return [p for p in repo.projects() if can_view_project(p.project_id, user)]
 
