@@ -352,6 +352,35 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 const Nav = () => {
   const token = localStorage.getItem("opz_google_token");
   const email = token ? tokenEmail(token) : "";
+  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [installed, setInstalled] = useState(
+    () => window.matchMedia?.("(display-mode: standalone)").matches ?? false,
+  );
+
+  useEffect(() => {
+    const onPrompt = (event: Event) => {
+      event.preventDefault();
+      setInstallPrompt(event as BeforeInstallPromptEvent);
+    };
+    const onInstalled = () => {
+      setInstallPrompt(null);
+      setInstalled(true);
+    };
+    window.addEventListener("beforeinstallprompt", onPrompt);
+    window.addEventListener("appinstalled", onInstalled);
+    return () => {
+      window.removeEventListener("beforeinstallprompt", onPrompt);
+      window.removeEventListener("appinstalled", onInstalled);
+    };
+  }, []);
+
+  const install = async () => {
+    if (!installPrompt) return;
+    await installPrompt.prompt();
+    const result = await installPrompt.userChoice;
+    if (result.outcome === "accepted") setInstallPrompt(null);
+  };
+
   return (
     <header>
       <Link to="/" className="brand">
@@ -360,6 +389,11 @@ const Nav = () => {
       <nav>
         <Link to="/">Projekty</Link>
         <Link to="/novy">Nový projekt</Link>
+        {!installed && installPrompt && (
+          <button className="install-app" onClick={install} title="Nainstalovat aplikaci do tohoto zařízení">
+            Nainstalovat aplikaci
+          </button>
+        )}
         {email && (
           <button
             className="logout"
@@ -374,6 +408,11 @@ const Nav = () => {
       </nav>
     </header>
   );
+};
+
+type BeforeInstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
 };
 function InfoTip({ text }: { text: string }) {
   return (
