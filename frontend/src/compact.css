@@ -247,6 +247,10 @@ main > section.panel:has(input[aria-label="PDF žádosti o platbu"]) .payment-li
 .payroll-batch-groups article.blocked > strong { color: #a0442b; }
 .payroll-batch-groups ul { grid-column: 1 / -1; margin: 3px 0 0; padding-left: 20px; color: #8f3c28; font-size: 12px; }
 .payroll-batch-groups article > a { grid-column: 1 / -1; width: max-content; font-size: 12px; }
+.payroll-batch-group-actions { display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 6px; }
+.payroll-batch-group-actions strong { color: #2f7251; }
+.payroll-batch-groups article.blocked .payroll-batch-group-actions strong { color: #a0442b; }
+.payroll-batch-group-actions button { padding: 7px 10px; font-size: 12px; white-space: nowrap; }
 .payroll-batch-actions { display: flex; justify-content: space-between; align-items: center; gap: 14px; margin-top: 12px; }
 .payroll-batch-actions span { color: #5f7068; font-size: 12px; }
 @media (max-width: 700px) { .payroll-batch-head, .payroll-batch-actions { align-items: stretch; flex-direction: column; } .payroll-batch-upload-options { align-items: stretch; flex-direction: column; } .payroll-batch-head .upload-button, .payroll-batch-upload-options button, .payroll-batch-actions button { align-self: flex-start; } }

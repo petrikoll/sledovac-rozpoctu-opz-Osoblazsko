@@ -2,6 +2,7 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
+import { unzipSync, zipSync } from "fflate";
 import { api, AUTH_EXPIRED_EVENT, czk, downloadApi, pct } from "./api";
 type Project = {
   project_id: string;
@@ -443,6 +444,7 @@ function Projects() {
   const [batchError, setBatchError] = useState("");
   const [batchLoading, setBatchLoading] = useState(false);
   const [batchNotice, setBatchNotice] = useState("");
+  const [batchDownloadKey, setBatchDownloadKey] = useState("");
   const canUseBatch = Boolean(me.data && ["admin", "editor"].includes(me.data.role) && (
     me.data.role === "admin" || data.some(project =>
       normalizedProjectName(project.recipient_name) === "osoblazsky cech z u"
@@ -477,6 +479,38 @@ function Projects() {
     } catch (error) { setBatchError(error instanceof Error ? error.message : "Rozdělené pásky se nepodařilo uložit."); }
     finally { setBatchLoading(false); }
   }
+  async function downloadBatchGroup(group: PayrollBatchGroup) {
+    if (!batchFile) return;
+    const groupKey = `${group.project_id || group.performance_code}-${group.monitoring_period || "x"}`;
+    setBatchError(""); setBatchDownloadKey(groupKey);
+    try {
+      const sourceFiles = unzipSync(new Uint8Array(await batchFile.arrayBuffer()));
+      const wantedNames = new Set(group.files.map(name => name.replace(/\\/g, "/").split("/").pop()?.toLocaleLowerCase("cs-CZ")));
+      const selected: Record<string, Uint8Array> = {};
+      for (const [path, content] of Object.entries(sourceFiles)) {
+        const baseName = path.replace(/\\/g, "/").split("/").pop() || path;
+        if (!wantedNames.has(baseName.toLocaleLowerCase("cs-CZ"))) continue;
+        let outputName = baseName; let suffix = 2;
+        while (selected[outputName]) {
+          const dot = baseName.lastIndexOf(".");
+          outputName = dot > 0 ? `${baseName.slice(0, dot)}_${suffix}${baseName.slice(dot)}` : `${baseName}_${suffix}`;
+          suffix += 1;
+        }
+        selected[outputName] = content;
+      }
+      if (!Object.keys(selected).length) throw new Error("V původním ZIPu nebyly nalezeny soubory této skupiny.");
+      const archive = zipSync(selected, { level: 6 });
+      const bytes = archive.buffer.slice(archive.byteOffset, archive.byteOffset + archive.byteLength) as ArrayBuffer;
+      const url = URL.createObjectURL(new Blob([bytes], { type: "application/zip" }));
+      const link = document.createElement("a");
+      const projectName = group.project_name.replace(/[<>:"/\\|?*\u0000-\u001f]+/g, "_").replace(/[. ]+$/g, "").trim() || "projekt";
+      link.href = url;
+      link.download = `Vyplatni_pasky_${group.monitoring_period ? `MO${group.monitoring_period}_` : ""}${projectName}.zip`;
+      document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
+    } catch (error) {
+      setBatchError(error instanceof Error ? error.message : "ZIP projektu se nepodařilo vytvořit.");
+    } finally { setBatchDownloadKey(""); }
+  }
   return (
     <main>
       <div className="project-create">
@@ -490,12 +524,12 @@ function Projects() {
         {batchError && <div className="alert">{batchError}</div>}
         {batchNotice && <div className="info">{batchNotice}</div>}
         {batchResult && <div className="payroll-batch-groups">
-          {batchResult.groups.map((group, index) => <article className={group.ready ? "ready" : "blocked"} key={`${group.performance_code}-${group.project_id || index}-${group.monitoring_period}`}>
+          {batchResult.groups.map((group, index) => { const groupKey = `${group.project_id || group.performance_code}-${group.monitoring_period || "x"}`; return <article className={group.ready ? "ready" : "blocked"} key={`${group.performance_code}-${group.project_id || index}-${group.monitoring_period}`}>
             <div><small>VÝKON {group.performance_code || "NEURČEN"}</small><h3>{group.project_name}</h3><p>{group.months.map(monthLabel).join(", ")} · {group.monitoring_period ? `${group.monitoring_period}. období` : "období neurčeno"} · {group.files.length} PDF</p></div>
-            <strong>{group.ready ? "Připraveno" : "Vyžaduje opravu"}</strong>
+            <div className="payroll-batch-group-actions"><strong>{group.ready ? "Připraveno" : "Vyžaduje opravu"}</strong><button type="button" className="secondary" disabled={!group.files.length || Boolean(batchDownloadKey)} onClick={() => downloadBatchGroup(group)}>{batchDownloadKey === groupKey ? "Vytvářím ZIP…" : "Stáhnout ZIP"}</button></div>
             {group.issues.length > 0 && <ul>{group.issues.map(issue => <li key={issue}>{issue}</li>)}</ul>}
             {group.project_id && <Link to={`/projekty/${group.project_id}`}>Otevřít projekt</Link>}
-          </article>)}
+          </article>; })}
           {batchResult.unrecognized.map(item => <article className="blocked" key={item.file_name}><div><small>NEROZPOZNÁNO</small><h3>{item.file_name}</h3><p>{item.issue}</p></div><strong>Neuloží se</strong></article>)}
         </div>}
         {batchResult && <div className="payroll-batch-actions"><span>{batchResult.ready_groups} skupin připraveno k uložení. Skupiny s problémem se neuloží.</span><button type="button" disabled={!batchResult.ready_groups || batchLoading} onClick={importBatch}>{batchLoading ? "Ukládám…" : "Uložit rozpoznané pásky"}</button></div>}
