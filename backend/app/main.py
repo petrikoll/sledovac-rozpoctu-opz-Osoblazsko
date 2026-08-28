@@ -918,9 +918,12 @@ def _analyze_payroll_batch_archive(data: bytes, user: dict) -> dict:
             period = _period_for_payroll_month(selected_project.project_id, row["month"]) if selected_project else None
             key = (performance, selected_project.project_id if selected_project else "", period)
             group = raw_groups.setdefault(key, {"performance_code": performance, "project": selected_project,
-                "monitoring_period": period, "files": [], "rows": []})
+                "monitoring_period": period, "files": [], "file_hashes": [], "rows": []})
             if archive_path not in group["files"]:
                 group["files"].append(archive_path)
+            file_hash = hashlib.sha256(content).hexdigest()
+            if file_hash not in group["file_hashes"]:
+                group["file_hashes"].append(file_hash)
             group["rows"].append(row)
     groups = []
     for group in raw_groups.values():
@@ -964,7 +967,7 @@ def _analyze_payroll_batch_archive(data: bytes, user: dict) -> dict:
             "project_name": selected_project.project_name if selected_project else next((name for code, name in PAYROLL_PERFORMANCE_PROJECTS.items() if normalized_name(code) == normalized_name(group["performance_code"])), "Neurčený projekt"),
             "monitoring_period": group["monitoring_period"],
             "months": sorted({str(row.get("month", ""))[:10] for row in resolved_rows}),
-            "files": group["files"], "rows": resolved_rows,
+            "files": group["files"], "file_hashes": group["file_hashes"], "rows": resolved_rows,
             "budget_items": [{"code": item.code, "name": item.name} for item in items],
             "issues": issues, "ready": not issues,
         })

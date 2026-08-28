@@ -3,6 +3,7 @@ from datetime import date
 from decimal import Decimal
 from io import BytesIO
 from types import SimpleNamespace
+import hashlib
 import zipfile
 from app.main import app, repo
 from app.models import BudgetAnalysis, BudgetItem, PaymentRequest, Sd2MonthlyEntry
@@ -241,6 +242,7 @@ def test_batch_payroll_zip_routes_and_replaces_same_worker(monkeypatch):
     assert analyzed.json()["groups"][0]["project_id"] == project_id
     assert analyzed.json()["groups"][0]["monitoring_period"] == 1
     assert analyzed.json()["groups"][0]["files"] == ["kveten.zip/andrea.pdf"]
+    assert analyzed.json()["groups"][0]["file_hashes"] == [hashlib.sha256(b"fake-pdf").hexdigest()]
     assert analyzed.json()["total_files"] == 1
 
     for _ in range(2):

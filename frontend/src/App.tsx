@@ -93,7 +93,7 @@ type WorkerRule = { employee_name: string; project_fte: string; payroll_componen
 type PayrollRow = { source_key: string; page_number: number; full_name: string; last_name: string; first_name: string; subject_id?: string; category: string; contract_name?: string; position_name?: string; component_code?: string; component_name?: string; component_description?: string; component_amount?: number; other_with_contributions?: number; project_bonus_available?: number; project_bonus_label?: string; employer_contribution_rate?: number; total_fte?: number; vacation_days?: number; vacation_hours?: number; project_vacation_hours?: number; month: string; payment_date?: string | null; gross_wage: number; employer_contributions: number; work_time_fund: number; worked_hours: number; project_hours?: number; project_fte?: number; employment_type: Sd2Entry["employment_type"]; budget_item_code: string; match_status: "matched" | "unmatched" | "ignored" };
 type PayrollPreview = { file_name: string; period: number; rows: PayrollRow[]; budget_items: { code: string; name: string }[] };
 type ProjectSchedule = { project_start_date: string | null; project_end_date: string | null; periods: { monitoring_period: number; start_month: string; end_month: string }[] };
-type PayrollBatchGroup = { performance_code: string; project_id: string | null; project_name: string; monitoring_period: number | null; months: string[]; files: string[]; rows: PayrollRow[]; issues: string[]; ready: boolean };
+type PayrollBatchGroup = { performance_code: string; project_id: string | null; project_name: string; monitoring_period: number | null; months: string[]; files: string[]; file_hashes?: string[]; rows: PayrollRow[]; issues: string[]; ready: boolean };
 type PayrollBatchResult = { groups: PayrollBatchGroup[]; unrecognized: { file_name: string; issue: string }[]; ready_groups: number; total_files: number; imported_groups?: number; imported_projects?: number; imported_entries?: number };
 
 function nestedZipFiles(data: Uint8Array, prefix = "", depth = 0): Record<string, Uint8Array> {
@@ -502,11 +502,18 @@ function Projects() {
     try {
       const sourceFiles = nestedZipFiles(new Uint8Array(await batchFile.arrayBuffer()));
       const wantedPaths = new Set(group.files.map(name => name.replace(/\\/g, "/").replace(/^\/+/, "").toLocaleLowerCase("cs-CZ")));
+      const wantedHashes = new Set(group.file_hashes || []);
       const selected: Record<string, Uint8Array> = {};
       for (const [path, content] of Object.entries(sourceFiles)) {
         const normalizedPath = path.replace(/\\/g, "/").replace(/^\/+/, "").toLocaleLowerCase("cs-CZ");
         const baseName = path.replace(/\\/g, "/").split("/").pop() || path;
-        if (!wantedPaths.has(normalizedPath)) continue;
+        let matches = wantedPaths.has(normalizedPath);
+        if (!matches && wantedHashes.size) {
+          const digest = await crypto.subtle.digest("SHA-256", content.slice().buffer);
+          const hash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+          matches = wantedHashes.has(hash);
+        }
+        if (!matches) continue;
         let outputName = baseName; let suffix = 2;
         while (selected[outputName]) {
           const dot = baseName.lastIndexOf(".");
