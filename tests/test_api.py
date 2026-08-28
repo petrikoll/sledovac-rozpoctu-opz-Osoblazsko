@@ -227,9 +227,12 @@ def test_batch_payroll_zip_routes_and_replaces_same_worker(monkeypatch):
         "payment_date": "2026-06-08", "subject_id": "01937324",
         "project_bonus_available": Decimal("0"), "other_with_contributions": Decimal("0"),
     }])
+    nested_archive = BytesIO()
+    with zipfile.ZipFile(nested_archive, "w") as output:
+        output.writestr("andrea.pdf", b"fake-pdf")
     archive = BytesIO()
     with zipfile.ZipFile(archive, "w") as output:
-        output.writestr("andrea.pdf", b"fake-pdf")
+        output.writestr("kveten.zip", nested_archive.getvalue())
 
     analyzed = client.post("/api/payroll-batch/analyze",
         files={"file": ("mzdy.zip", archive.getvalue(), "application/zip")})
@@ -237,6 +240,8 @@ def test_batch_payroll_zip_routes_and_replaces_same_worker(monkeypatch):
     assert analyzed.json()["groups"][0]["ready"] is True
     assert analyzed.json()["groups"][0]["project_id"] == project_id
     assert analyzed.json()["groups"][0]["monitoring_period"] == 1
+    assert analyzed.json()["groups"][0]["files"] == ["kveten.zip/andrea.pdf"]
+    assert analyzed.json()["total_files"] == 1
 
     for _ in range(2):
         imported = client.post("/api/payroll-batch/import",

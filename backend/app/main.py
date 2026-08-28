@@ -859,27 +859,58 @@ def _period_for_payroll_month(project_id: str, value: str | date) -> int | None:
     return None
 
 
+def _payroll_archive_files(data: bytes) -> list[tuple[str, bytes]]:
+    """Return leaf files from a ZIP, including ZIPs nested up to three levels."""
+    files: list[tuple[str, bytes]] = []
+    expanded_size = 0
+    archive_entries = 0
+
+    def visit(payload: bytes, prefix: str = "", depth: int = 0) -> None:
+        nonlocal expanded_size, archive_entries
+        try:
+            with zipfile.ZipFile(BytesIO(payload)) as archive:
+                infos = [item for item in archive.infolist() if not item.is_dir()]
+                archive_entries += len(infos)
+                if archive_entries > 250:
+                    raise HTTPException(422, "ZIP může obsahovat nejvýše 200 souborů a 50 vložených archivů.")
+                for info in infos:
+                    expanded_size += info.file_size
+                    if expanded_size > 200 * 1024 * 1024:
+                        raise HTTPException(413, "Rozbalený ZIP je větší než povolených 200 MB.")
+                    normalized_path = info.filename.replace("\\", "/").lstrip("/")
+                    full_path = f"{prefix}{normalized_path}"
+                    content = archive.read(info)
+                    if normalized_path.lower().endswith(".zip"):
+                        if depth >= 3:
+                            raise HTTPException(422, "ZIP může být vnořen nejvýše do tří úrovní.")
+                        visit(content, f"{full_path}/", depth + 1)
+                    else:
+                        files.append((full_path, content))
+                        if len(files) > 200:
+                            raise HTTPException(422, "ZIP může obsahovat nejvýše 200 souborů.")
+        except zipfile.BadZipFile as exc:
+            message = "Vložený ZIP se nepodařilo přečíst." if prefix else "Soubor není platný ZIP archiv."
+            raise HTTPException(422, message) from exc
+
+    visit(data)
+    if not files:
+        raise HTTPException(422, "ZIP neobsahuje žádné soubory.")
+    return files
+
+
 def _analyze_payroll_batch_archive(data: bytes, user: dict) -> dict:
-    try:
-        archive = zipfile.ZipFile(BytesIO(data))
-    except zipfile.BadZipFile as exc:
-        raise HTTPException(422, "Soubor není platný ZIP archiv.") from exc
-    infos = [item for item in archive.infolist() if not item.is_dir()]
-    if not infos or len(infos) > 200:
-        raise HTTPException(422, "ZIP musí obsahovat 1 až 200 souborů.")
-    if sum(item.file_size for item in infos) > 200 * 1024 * 1024:
-        raise HTTPException(413, "Rozbalený ZIP je větší než povolených 200 MB.")
+    archive_files = _payroll_archive_files(data)
     raw_groups: dict[tuple[str, str, int | None], dict] = {}
     unrecognized: list[dict] = []
-    for info in infos:
-        file_name = os.path.basename(info.filename.replace("\\", "/"))
+    for archive_path, content in archive_files:
+        file_name = os.path.basename(archive_path)
         if not file_name.lower().endswith(".pdf"):
-            unrecognized.append({"file_name": file_name, "issue": "Soubor není PDF."})
+            unrecognized.append({"file_name": archive_path, "issue": "Soubor není PDF."})
             continue
         try:
-            rows = parse_payroll_slips(archive.read(info))
+            rows = parse_payroll_slips(content)
         except (ValueError, RuntimeError):
-            unrecognized.append({"file_name": file_name, "issue": "Výplatní pásku se nepodařilo přečíst."})
+            unrecognized.append({"file_name": archive_path, "issue": "Výplatní pásku se nepodařilo přečíst."})
             continue
         for row in rows:
             performance = str(row.get("performance_code", "")).strip()
@@ -888,8 +919,8 @@ def _analyze_payroll_batch_archive(data: bytes, user: dict) -> dict:
             key = (performance, selected_project.project_id if selected_project else "", period)
             group = raw_groups.setdefault(key, {"performance_code": performance, "project": selected_project,
                 "monitoring_period": period, "files": [], "rows": []})
-            if file_name not in group["files"]:
-                group["files"].append(file_name)
+            if archive_path not in group["files"]:
+                group["files"].append(archive_path)
             group["rows"].append(row)
     groups = []
     for group in raw_groups.values():
@@ -940,7 +971,7 @@ def _analyze_payroll_batch_archive(data: bytes, user: dict) -> dict:
     groups.sort(key=lambda item: (item["project_name"], item["monitoring_period"] or 999))
     return {"groups": groups, "unrecognized": unrecognized,
             "ready_groups": sum(bool(group["ready"]) for group in groups),
-            "total_files": len(infos)}
+            "total_files": len(archive_files)}
 
 
 def _description_number(value: Decimal) -> str:

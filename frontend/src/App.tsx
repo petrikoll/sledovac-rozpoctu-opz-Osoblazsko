@@ -96,6 +96,22 @@ type ProjectSchedule = { project_start_date: string | null; project_end_date: st
 type PayrollBatchGroup = { performance_code: string; project_id: string | null; project_name: string; monitoring_period: number | null; months: string[]; files: string[]; rows: PayrollRow[]; issues: string[]; ready: boolean };
 type PayrollBatchResult = { groups: PayrollBatchGroup[]; unrecognized: { file_name: string; issue: string }[]; ready_groups: number; total_files: number; imported_groups?: number; imported_projects?: number; imported_entries?: number };
 
+function nestedZipFiles(data: Uint8Array, prefix = "", depth = 0): Record<string, Uint8Array> {
+  if (depth > 3) throw new Error("ZIP je vnořen příliš hluboko.");
+  const result: Record<string, Uint8Array> = {};
+  for (const [path, content] of Object.entries(unzipSync(data))) {
+    const normalizedPath = path.replace(/\\/g, "/").replace(/^\/+/, "");
+    if (!normalizedPath || normalizedPath.endsWith("/")) continue;
+    const fullPath = `${prefix}${normalizedPath}`;
+    if (normalizedPath.toLocaleLowerCase("cs-CZ").endsWith(".zip")) {
+      Object.assign(result, nestedZipFiles(content, `${fullPath}/`, depth + 1));
+    } else {
+      result[fullPath] = content;
+    }
+  }
+  return result;
+}
+
 function personnelBudgetRows(rows: BudgetRow[]) {
   const candidates = rows.filter(row => row.category === "direct" && /^1\.1\.[123]\.\d+(\.|$)/.test(row.code));
   const unique = [...new Map(candidates.map(row => [row.code, row])).values()];
@@ -484,12 +500,13 @@ function Projects() {
     const groupKey = `${group.project_id || group.performance_code}-${group.monitoring_period || "x"}`;
     setBatchError(""); setBatchDownloadKey(groupKey);
     try {
-      const sourceFiles = unzipSync(new Uint8Array(await batchFile.arrayBuffer()));
-      const wantedNames = new Set(group.files.map(name => name.replace(/\\/g, "/").split("/").pop()?.toLocaleLowerCase("cs-CZ")));
+      const sourceFiles = nestedZipFiles(new Uint8Array(await batchFile.arrayBuffer()));
+      const wantedPaths = new Set(group.files.map(name => name.replace(/\\/g, "/").replace(/^\/+/, "").toLocaleLowerCase("cs-CZ")));
       const selected: Record<string, Uint8Array> = {};
       for (const [path, content] of Object.entries(sourceFiles)) {
+        const normalizedPath = path.replace(/\\/g, "/").replace(/^\/+/, "").toLocaleLowerCase("cs-CZ");
         const baseName = path.replace(/\\/g, "/").split("/").pop() || path;
-        if (!wantedNames.has(baseName.toLocaleLowerCase("cs-CZ"))) continue;
+        if (!wantedPaths.has(normalizedPath)) continue;
         let outputName = baseName; let suffix = 2;
         while (selected[outputName]) {
           const dot = baseName.lastIndexOf(".");
