@@ -3,6 +3,7 @@ from io import BytesIO
 from pathlib import Path
 import zipfile
 
+import pytest
 import openpyxl
 
 from app.pdf_parser import extract_budget_code, money, parse_payment_request
@@ -46,8 +47,8 @@ def test_money_with_spaces_around_decimal_digits():
     assert money("6 110, 0 0") == Decimal("6110.00")
 
 
-def test_real_budget():
-    result = parse_budget(SAMPLES / "Export_2026-07-11_084920.xlsx")
+def test_budget_hierarchy_and_totals(budget_xlsx):
+    result = parse_budget(budget_xlsx)
     assert result.total_amount == Decimal("4415040")
     assert result.lump_sum_rate == Decimal("0.4")
     assert result.lump_sum_base_code == "1.1"
@@ -62,8 +63,8 @@ def test_real_budget():
     assert validate_budget_structure(result) == []
 
 
-def test_budget_structure_rejects_inconsistent_parent_totals():
-    result = parse_budget(SAMPLES / "Export_2026-07-11_084920.xlsx")
+def test_budget_structure_rejects_inconsistent_parent_totals(budget_xlsx):
+    result = parse_budget(budget_xlsx)
     item = next(value for value in result.items if value.code == "1.1.1")
     item.total_amount += Decimal("1")
 
@@ -72,8 +73,8 @@ def test_budget_structure_rejects_inconsistent_parent_totals():
     assert any("1.1.1" in error and "rozdíl" in error for error in errors)
 
 
-def test_fallback_and_formula_export():
-    data = (SAMPLES / "Export_2026-07-11_084920.xlsx").read_bytes()
+def test_fallback_and_formula_export(budget_xlsx):
+    data = budget_xlsx
     assert fallback_rows(data)
     result = parse_budget(data)
     wb = openpyxl.load_workbook(BytesIO(export_with_formulas(result)), data_only=False)
@@ -100,8 +101,8 @@ def test_budget_status_export_adds_only_filled_months():
     assert ws.cell(2, 6).value == 30000
 
 
-def test_transfer_proposal_export_contains_audit_columns():
-    result = parse_budget(SAMPLES / "Export_2026-07-11_084920.xlsx")
+def test_transfer_proposal_export_contains_audit_columns(budget_xlsx):
+    result = parse_budget(budget_xlsx)
     data = export_transfer_proposal(result, [Transfer(
         source_code="1.1.1.1", target_code="1.1.1.2", amount=Decimal("43477.20"))])
     wb = openpyxl.load_workbook(BytesIO(data), data_only=False)
@@ -136,6 +137,7 @@ def test_budget_money_is_normalized_to_cents():
     assert validate_budget_structure(result) == []
 
 
+@pytest.mark.skipif(not all((SAMPLES / name).exists() for name in ("ZOP_PRJ0.pdf", "ZOP_PRJ1.pdf", "ZOP_PRJ2.pdf")), reason="Optional private local PDF fixtures are not committed")
 def test_payment_samples():
     p0 = parse_payment_request(SAMPLES / "ZOP_PRJ0.pdf")
     p1 = parse_payment_request(SAMPLES / "ZOP_PRJ1.pdf")

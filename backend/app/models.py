@@ -31,6 +31,15 @@ class Project(ProjectCreate):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class AccessRule(BaseModel):
+    email: str = Field(pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+    role: Literal["admin", "editor", "user"] = "user"
+    active: bool = True
+    scope: Literal["all", "projects", "recipient"] = "projects"
+    project_ids: list[str] = Field(default_factory=list)
+    recipient_name: str = ""
+
+
 class MonitoringPeriodRange(BaseModel):
     monitoring_period: int = Field(ge=1, le=20)
     start_month: date
@@ -170,10 +179,21 @@ class Sd2MonthlyEntry(BaseModel):
     work_time_fund: Decimal = Decimal("0")
     project_hours: Decimal = Decimal("0")
     description: str = Field(default="", max_length=2000)
+    source_file_name: str = ""
+    source_sha256: str = ""
+    source_key: str = ""
+
+    @property
+    def project_wage(self) -> Decimal:
+        # Legacy manually entered rows contain a project amount and no hours.
+        # When a fund is supplied, gross_wage is the WHOLE employment relation.
+        if self.work_time_fund > 0:
+            return (self.gross_wage / self.work_time_fund * self.project_hours).quantize(Decimal("0.01"))
+        return self.gross_wage
 
     @property
     def total_amount(self) -> Decimal:
-        return self.gross_wage + self.employer_contributions + self.other_with_contributions + self.other_without_contributions
+        return self.project_wage + self.employer_contributions + self.other_with_contributions + self.other_without_contributions
 
 
 class TransferCandidate(BaseModel):

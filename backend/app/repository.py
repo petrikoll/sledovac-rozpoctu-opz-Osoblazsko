@@ -15,6 +15,7 @@ from googleapiclient.discovery import build
 
 from .models import CofinancingEntry, LumpSumEntry, PaymentRequest, Project, Sd2MonthlyEntry
 from .models import BudgetAnalysis, BudgetItem
+from .transactions import stage
 
 
 SHEETS = {
@@ -28,7 +29,9 @@ SHEETS = {
     "PLATBY_A_ZALOHY": ["cash_flow_id", "project_id", "payment_request_id", "cash_flow_type", "payment_date", "amount", "note", "created_at"],
     "UTRATA_PAUSALU": ["lump_sum_entry_id", "project_id", "monitoring_period", "entry_date", "entry_mode", "entered_amount", "calculated_period_delta", "cumulative_spent", "note", "created_at", "created_by"],
     "SPOLUFINANCOVANI": ["cofinancing_entry_id", "project_id", "entry_date", "amount", "note", "created_at", "created_by"],
-    "SD2_MESICE": ["sd2_entry_id", "project_id", "monitoring_period", "month", "budget_item_code", "gross_wage", "employer_contributions", "other_with_contributions", "other_without_contributions", "payment_date", "created_at", "created_by", "external_id", "subject_id", "last_name", "first_name", "employment_type", "work_time_fund", "project_hours", "description"],
+    "SD2_MESICE": ["sd2_entry_id", "project_id", "monitoring_period", "month", "budget_item_code", "gross_wage", "employer_contributions", "other_with_contributions", "other_without_contributions", "payment_date", "created_at", "created_by", "external_id", "subject_id", "last_name", "first_name", "employment_type", "work_time_fund", "project_hours", "description", "source_file_name", "source_sha256", "source_key"],
+    "SD2_HISTORIE": ["snapshot_id", "project_id", "monitoring_period", "created_at", "created_by", "action", "chunk_index", "payload"],
+    "PRISTUPY": ["email", "role", "active", "scope", "project_ids", "recipient_name", "updated_at", "updated_by"],
     "SD2_PRILOHY": ["attachment_id", "project_id", "monitoring_period", "file_name", "drive_file_id", "uploaded_at", "uploaded_by"],
     # Keep the original six columns first for compatibility with existing Sheets.
     "PRACOVNICI_ROZPOCTU": ["worker_assignment_id", "project_id", "budget_item_code", "employee_names", "updated_at", "updated_by", "employee_name", "project_fte", "payroll_component_amount", "contract_contains"],
@@ -68,6 +71,8 @@ class InMemoryRepository(Repository):
         self.project_schedules: dict[str, dict[str, Any]] = {}
         self.project_access: dict[str, set[str]] = defaultdict(set)
         self.import_log: list[dict[str, Any]] = []
+        self.sd2_history: list[dict[str, Any]] = []
+        self.access_rules: dict[str, dict[str, Any]] = {}
 
     def projects(self): return list(self.project_data.values())
     def save_project(self, project): self.project_data[project.project_id] = project
@@ -121,12 +126,14 @@ class GoogleSheetsRepository(Repository):
     @synchronized_google_call
     def append_records(self, sheet: str, records: list[dict[str, Any]]) -> None:
         if not records: return
+        if stage("append", sheet, records): return
         rows = [[self._scalar(record.get(column, "")) for column in SHEETS[sheet]] for record in records]
         self.api.values().append(spreadsheetId=self.id, range=f"'{sheet}'!A:{'AZ'}", valueInputOption="RAW",
                                  insertDataOption="INSERT_ROWS", body={"values": rows}).execute()
 
     @synchronized_google_call
     def update_record(self, sheet: str, key: str, key_value: str, changes: dict[str, Any]) -> None:
+        if stage("update", sheet, key, key_value, changes): return
         headers = SHEETS[sheet]; key_col = headers.index(key)
         rows = self.api.values().get(spreadsheetId=self.id, range=f"'{sheet}'!A2:AZ").execute().get("values", [])
         for row_number, row in enumerate(rows, 2):
@@ -139,6 +146,7 @@ class GoogleSheetsRepository(Repository):
 
     @synchronized_google_call
     def delete_record(self, sheet: str, key: str, key_value: str) -> None:
+        if stage("delete", sheet, key, key_value, False): return
         metadata = self.api.get(spreadsheetId=self.id).execute()
         sheet_id = next(s["properties"]["sheetId"] for s in metadata["sheets"] if s["properties"]["title"] == sheet)
         headers = SHEETS[sheet]; key_col = headers.index(key)
@@ -153,6 +161,7 @@ class GoogleSheetsRepository(Repository):
     @synchronized_google_call
     def delete_records(self, sheet: str, key: str, key_value: str) -> int:
         """Smaže všechny odpovídající řádky; maže odzadu, aby se neposouvala čísla řádků."""
+        if stage("delete", sheet, key, key_value, True): return 0
         metadata = self.api.get(spreadsheetId=self.id).execute()
         sheet_id = next(s["properties"]["sheetId"] for s in metadata["sheets"] if s["properties"]["title"] == sheet)
         headers = SHEETS[sheet]; key_col = headers.index(key)
@@ -164,6 +173,56 @@ class GoogleSheetsRepository(Repository):
                 "startIndex": number - 1, "endIndex": number}}} for number in reversed(row_numbers)]
             self.api.batchUpdate(spreadsheetId=self.id, body={"requests": requests}).execute()
         return len(row_numbers)
+
+    @synchronized_google_call
+    def commit(self, operations: list) -> None:
+        """Prepare all dependent row edits, then submit ONE atomic batch."""
+        if not operations: return
+        metadata = self.api.get(spreadsheetId=self.id).execute()
+        ids = {s["properties"]["title"]: s["properties"]["sheetId"] for s in metadata["sheets"]}
+        contents = {}
+        requests = []
+
+        def cells(row):
+            result = []
+            for raw in row:
+                value = self._scalar(raw)
+                kind = "boolValue" if isinstance(value, bool) else "numberValue" if isinstance(value, (int, float)) else "stringValue"
+                result.append({"userEnteredValue": {kind: value if kind != "stringValue" else str(value)}})
+            return result
+
+        for operation, args in operations:
+            sheet = args[0]
+            if sheet not in contents:
+                contents[sheet] = self.api.values().get(spreadsheetId=self.id, range=f"'{sheet}'!A2:AZ", valueRenderOption="UNFORMATTED_VALUE").execute().get("values", [])
+            rows = contents[sheet]
+            headers = SHEETS[sheet]
+            sheet_id = ids[sheet]
+            if operation == "append":
+                additions = [[self._scalar(record.get(column, "")) for column in headers] for record in args[1]]
+                if additions:
+                    requests.append({"appendCells": {"sheetId": sheet_id, "rows": [{"values": cells(row)} for row in additions], "fields": "userEnteredValue"}})
+                    rows.extend(additions)
+                continue
+            _, key, value, detail = args
+            column = headers.index(key)
+            matches = [index for index, row in enumerate(rows) if len(row) > column and str(row[column]) == str(value)]
+            if operation == "update":
+                if not matches: raise ValueError(f"Záznam v listu {sheet} již neexistuje. Obnovte data.")
+                index = matches[0]
+                rows[index] += [""] * (len(headers) - len(rows[index]))
+                for field, raw in detail.items():
+                    if field not in headers: continue
+                    col = headers.index(field)
+                    rows[index][col] = self._scalar(raw)
+                    requests.append({"updateCells": {"start": {"sheetId": sheet_id, "rowIndex": index + 1, "columnIndex": col}, "rows": [{"values": cells([raw])}], "fields": "userEnteredValue"}})
+            else:
+                if not detail and not matches: raise ValueError(f"Záznam v listu {sheet} již neexistuje. Obnovte data.")
+                for index in reversed(matches if detail else matches[:1]):
+                    requests.append({"deleteDimension": {"range": {"sheetId": sheet_id, "dimension": "ROWS", "startIndex": index + 1, "endIndex": index + 2}}})
+                    rows.pop(index)
+        if requests:
+            self.api.batchUpdate(spreadsheetId=self.id, body={"requests": requests}).execute()
 
     @synchronized_google_call
     def _records(self, sheet: str) -> list[dict[str, Any]]:
@@ -258,3 +317,10 @@ class GoogleSheetsRepository(Repository):
         for schedule in target.project_schedules.values():
             schedule["periods"].sort(key=lambda item: item["monitoring_period"])
         target.import_log = self._records("IMPORT_LOG")
+        # Additive migration; old local fixtures may not contain these sheets.
+        try:
+            target.sd2_history = self._records("SD2_HISTORIE")
+            target.access_rules = {str(row["email"]).lower(): row for row in self._records("PRISTUPY") if row.get("email")}
+        except KeyError:
+            target.sd2_history = []
+            target.access_rules = {}

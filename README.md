@@ -9,8 +9,8 @@ vypořádání. Peněžní výpočty backendu používají `Decimal`.
 
 - `frontend/`: React, TypeScript, Vite, TanStack Query, React Hook Form
 - `backend/app/`: FastAPI, parsery, doména, Google adaptéry a in-memory vývojové úložiště
-- `samples/`: původní dodané soubory pro integrační testy
-- `tests/`: pytest nad skutečnými soubory a API
+- `samples/`: nepovinné soukromé podklady pro lokální integrační testy (nepatří do Gitu)
+- `tests/`: pytest nad syntetickými daty, výpočty, autorizací a API
 - produkce: jediná Docker web service na Renderu; originály v Google Drive, data v Sheets
 
 ## Lokální spuštění
@@ -29,7 +29,7 @@ V druhém terminálu:
 
 ```powershell
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
@@ -61,9 +61,64 @@ diskem. Detailní checklist je v `docs/DEPLOYMENT_RENDER.md`.
 
 ## Bezpečnost
 
-Produkce vyžaduje ověřený Google ID token a allowlist. API validuje příponu, MIME typ,
-limit 20 MB a SHA-256; duplicitní import odmítá. Do logů se nezapisuje obsah dokumentů,
-tokeny ani bankovní/osobní údaje. HTTPS zajišťuje Render.
+Produkce vyžaduje ověřený Google ID token a povolený přístup. API validuje příponu, MIME typ,
+limit velikosti a SHA-256; duplicitní import odmítá. Do technických logů se nemá
+zapisovat obsah dokumentů ani tokeny. Uživatelská historie obsahuje e-mail autora
+a názvy zdrojových souborů, proto se zobrazuje pouze uživatelům daného projektu.
+HTTPS zajišťuje Render.
+
+## Opravy a nové ovládání (září 2026)
+
+- Administrátor najde v horní navigaci **Přístupy**. Může povolit nebo zakázat účet,
+  určit roli a vybrat jednotlivé projekty nebo příjemce. Pravidlo v listu `PRISTUPY`
+  má přednost před starším `ALLOWED_EMAILS` a pevnými omezeními v kódu. Stávající
+  uživatelé si zachovají dosavadní přístupy, dokud správce nevytvoří nové pravidlo.
+  Google OAuth v režimu Testing nadále vyžaduje přidání testovacího uživatele v Google Cloud.
+- V detailu SD2 je **Historie období a obnova**. Před uložením, smazáním nebo ZIP
+  importem se zálohuje předchozí stav. Historie vzniká až od nasazení této funkce;
+  neobnovuje starší smazaná data ani soubory na Google Disku. Obnova je rovněž zálohována.
+- Souběžná úprava stejného období se odmítne chybou 409. Neuložené změny zůstávají
+  ve formuláři; před jejich zahozením je možné stáhnout pracovní XML. Poté načtěte
+  aktuální stav a změny porovnejte. Neexistuje automatické sloučení dvou úprav.
+- Při vypršení přihlášení zůstává rozpracovaný formulář pouze v paměti otevřeného
+  okna. Přihlášení stejným účtem jej obnoví; jiný účet vymaže formulář i klientskou
+  mezipaměť. Obnovení nebo zavření stránky rozpracovaná data nezachová. Mzdová data
+  se kvůli této funkci neukládají do localStorage.
+- Výpočet SD2 používá projektový podíl mzdy podle fondu a hodin, korekce a odvody.
+  U původních ručně zadaných řádků bez fondu zůstává částka interpretována jako
+  projektová. U řádků je vidět rozpad výpočtu a zdrojový soubor. Export prázdného
+  XML je nadále možný s upozorněním.
+- Nejvyšší verze každé ŽoP je jediná započtená do výpočtů; starší verze zůstávají
+  uložené. Dosud neschválené výdaje se nevykazují jako schválené.
+- ZIP import ignoruje obsahově totožné PDF a odmítá nejednoznačné podklady pro
+  stejného pracovníka, vztah, položku a měsíc. Přímý import zachovává kolegy na
+  stejné položce, jiné měsíce i stabilní XML ID. U více M01 v Mostech je potřeba
+  ověřit a výslovně vybrat projektovou složku; pouhé pořadí částek nestačí.
+
+### Bezpečné ukládání do Sheets
+
+Změny jednoho požadavku včetně historie se odešlou jako jediný atomický
+`spreadsheets.batchUpdate`. Při chybě se vrátí paměťový stav; po neurčitém výsledku
+síťové operace aplikace nejprve znovu načte úložiště. Zápis se neopakuje automaticky.
+V produkci bez nakonfigurovaného trvalého úložiště aplikace vrací 503.
+
+**Pro jednu tabulku smí zapisovat pouze jedna instance / jeden worker aplikace.**
+Sheets nemají databázový compare-and-swap napříč procesy. Provoz více instancí,
+současný lokální backend nad produkční tabulkou nebo ruční úpravy tabulky během
+provozu nejsou bezpečné. Pro takové nasazení je potřeba transakční databáze.
+Historie uvnitř stejné tabulky nenahrazuje oddělenou pravidelnou zálohu celé tabulky.
+
+Před nasazením vytvořte zálohu Sheets. První start přidá listy `PRISTUPY` a
+`SD2_HISTORIE` a doplní zdrojové sloupce v `SD2_MESICE`; stávající záznamy nemaže.
+Nasazujte frontend a backend společně a poté aplikaci obnovte. Starý otevřený
+klient bez kontroly verze nesmí zapisovat SD2 a obdrží výzvu k obnovení.
+
+### Automatické kontroly
+
+GitHub Actions spouštějí backend testy, frontend testy, produkční sestavení a
+kontrolu produkčních npm závislostí. Soukromé PDF/XLSX se do CI neposílají; jediný
+nepovinný test skutečných PDF se bez lokálních vzorů přeskočí. Testovací konfigurace
+odstraňuje zděděné Google přihlašovací údaje, aby testy nemohly zapisovat do produkce.
 
 ## Známé hranice
 

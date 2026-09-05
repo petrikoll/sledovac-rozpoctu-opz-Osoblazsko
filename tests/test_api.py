@@ -481,19 +481,17 @@ def test_health_and_project_crud():
     assert client.get("/api/projects").json()[0]["project_name"] == "Test"
 
 
-def test_budget_two_phase_import_and_duplicate():
+def test_budget_two_phase_import_and_duplicate(budget_xlsx):
     project = client.post("/api/projects", json={"project_code": "CZ.B", "project_name": "B", "recipient_name": "P"}).json()
-    with open("samples/Export_2026-07-11_084920.xlsx", "rb") as f:
-        analyzed = client.post(f"/api/projects/{project['project_id']}/budgets/analyze", files={"file": ("budget.xlsx", f, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+    analyzed = client.post(f"/api/projects/{project['project_id']}/budgets/analyze", files={"file": ("budget.xlsx", budget_xlsx, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
     assert analyzed.status_code == 200
     imported = client.post(f"/api/projects/{project['project_id']}/budgets/import", json={"token": analyzed.json()["token"]})
     assert imported.status_code == 200
 
 
-def test_admin_can_delete_budget_version():
+def test_admin_can_delete_budget_version(budget_xlsx):
     project = client.post("/api/projects", json={"project_code": "CZ.D", "project_name": "D", "recipient_name": "P"}).json()
-    with open("samples/Export_2026-07-11_084920.xlsx", "rb") as f:
-        analyzed = client.post(f"/api/projects/{project['project_id']}/budgets/analyze", files={"file": ("budget.xlsx", f, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+    analyzed = client.post(f"/api/projects/{project['project_id']}/budgets/analyze", files={"file": ("budget.xlsx", budget_xlsx, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
     version_id = client.post(f"/api/projects/{project['project_id']}/budgets/import", json={"token": analyzed.json()["token"]}).json()["version_id"]
 
     assert client.delete(f"/api/projects/{project['project_id']}/budgets/{version_id}").status_code == 204
@@ -545,10 +543,9 @@ def test_change_proposal_never_uses_informational_total_as_donor(monkeypatch):
     assert proposal["transfers"][0]["source_code"] == "1.1.1.1.2"
 
 
-def test_budget_change_rejects_even_one_haler_difference(monkeypatch):
+def test_budget_change_rejects_even_one_haler_difference(monkeypatch, budget_xlsx):
     project = client.post("/api/projects", json={"project_code": "CZ.CH", "project_name": "Změna", "recipient_name": "P"}).json()
-    with open("samples/Export_2026-07-11_084920.xlsx", "rb") as f:
-        analyzed = client.post(f"/api/projects/{project['project_id']}/budgets/analyze", files={"file": ("budget.xlsx", f, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+    analyzed = client.post(f"/api/projects/{project['project_id']}/budgets/analyze", files={"file": ("budget.xlsx", budget_xlsx, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
     client.post(f"/api/projects/{project['project_id']}/budgets/import", json={"token": analyzed.json()["token"]})
 
     import app.main as main

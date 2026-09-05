@@ -47,3 +47,21 @@ test("po dočasné chybě probouzeného serveru zopakuje bezpečné načtení", 
   await expect(result).resolves.toEqual([{ project_id: "1" }]);
   expect(fetchMock).toHaveBeenCalledTimes(2);
 });
+
+test("opožděná 401 ze starého požadavku nesmaže nové přihlášení", async () => {
+  localStorage.setItem("opz_google_token", "old-token");
+  let finish!: (value: unknown) => void;
+  vi.stubGlobal("fetch", vi.fn(() => new Promise(resolve => { finish = resolve; })));
+  const request = api("/projects");
+  localStorage.setItem("opz_google_token", "new-token");
+  finish({ ok: false, status: 401, json: async () => ({ detail: "Expired" }) });
+  await expect(request).rejects.toThrow("Expired");
+  expect(localStorage.getItem("opz_google_token")).toBe("new-token");
+});
+
+test("zápis po neurčité chybě serveru automaticky neopakuje", async () => {
+  const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 503, json: async () => ({ detail: "Nelze potvrdit uložení" }) });
+  vi.stubGlobal("fetch", fetchMock);
+  await expect(api("/projects/x/sd2-monthly", { method: "PUT", body: "{}" })).rejects.toThrow("Nelze potvrdit uložení");
+  expect(fetchMock).toHaveBeenCalledOnce();
+});

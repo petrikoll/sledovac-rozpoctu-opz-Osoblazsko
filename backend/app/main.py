@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import unicodedata
@@ -13,28 +14,43 @@ from io import BytesIO
 from urllib.parse import quote
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
+from pydantic import ValidationError
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from google.auth.transport import requests
 from google.oauth2 import id_token
 
 from .calculations import final_settlement, lump_sum_metrics, propose_transfers, q
-from .models import CofinancingEntry, LumpSumEntry, Project, ProjectCreate, ProjectSchedule, Sd2AttachmentRecord, Sd2MonthlyEntry, TransferCandidate
+from .models import AccessRule, CofinancingEntry, LumpSumEntry, Project, ProjectCreate, ProjectSchedule, Sd2AttachmentRecord, Sd2MonthlyEntry, TransferCandidate
 from .pdf_parser import extract_budget_code, parse_payment_request
 from .payroll_parser import parse_payroll_slips, parse_payslip_insurance
 from .repository import GoogleSheetsRepository, InMemoryRepository
 from .sd2_xml import build_sd2_xml
+from .payment_state import active_payments, is_approved, is_paid
+from .transactions import install_transactions
+from .sd2_history import revision, snapshot_rows, snapshots
 from .storage import GoogleDriveStorage, LocalFileStorage
 from .xlsx_parser import export_budget_status, export_final_settlement, export_transfer_proposal, export_with_formulas, parse_budget, parse_financial_plan, validate_budget_structure
 
 app = FastAPI(title="Sledovač čerpání rozpočtu OPZ+", version="1.0.0")
+
+
+@app.exception_handler(ValidationError)
+async def invalid_model(_request, error):
+    # Do not echo payroll values or other sensitive request data into errors.
+    fields = ", ".join(".".join(map(str, item["loc"])) for item in error.errors())
+    return JSONResponse({"detail": f"Neplatné údaje. Zkontrolujte pole: {fields}."}, status_code=422)
+
+
 app.add_middleware(CORSMiddleware, allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173").split(","), allow_methods=["*"], allow_headers=["*"])
 repo = InMemoryRepository()
 google_repo = None
 file_storage = None
 user_roles: dict[str, str] = {}
+disabled_users: set[str] = set()
 active_user: ContextVar[dict | None] = ContextVar("active_user", default=None)
 if os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") and os.getenv("GOOGLE_SPREADSHEET_ID"):
     google_repo = GoogleSheetsRepository(os.environ["GOOGLE_SPREADSHEET_ID"], os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
@@ -42,11 +58,13 @@ if os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") and os.getenv("GOOGLE_SPREADSHEET_ID
     google_repo.hydrate(repo)
     user_roles = {str(row.get("email", "")).lower(): str(row.get("role", "user"))
                   for row in google_repo._records("USERS") if google_repo._bool(row.get("active", True))}
+    disabled_users = {str(row.get("email", "")).lower() for row in google_repo._records("USERS") if not google_repo._bool(row.get("active", True))}
     if os.getenv("GOOGLE_DRIVE_FOLDER_ID"):
         file_storage = GoogleDriveStorage(os.environ["GOOGLE_DRIVE_FOLDER_ID"], os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
 elif os.getenv("ENVIRONMENT", "development") == "development":
     file_storage = LocalFileStorage(os.path.join(os.getcwd(), ".uploads"))
 analyses: dict[str, dict] = {}
+install_transactions(app, repo, lambda: google_repo, [analyses, user_roles])
 MAX_SIZE = 20 * 1024 * 1024
 RECIPIENT_ONLY_USERS = {
     "starosta@divcihrad.cz": "osoblažský cech, z.ú.",
@@ -62,21 +80,33 @@ MAS_PARTNER_PROJECT_NAME = "reseni oblasti dluhove problematiky na uzemi mas"
 MAS_PARTNER_SUBJECT_ID = "01937324"
 
 
-def current_user(authorization: str | None = Header(default=None)) -> dict:
+async def current_user(request: Request, authorization: str | None = Header(default=None)) -> dict:
     client_id = os.getenv("GOOGLE_CLIENT_ID")
     if not client_id and os.getenv("ENVIRONMENT", "development") == "development":
         user = {"email": "local@localhost", "role": "admin"}; active_user.set(user); return user
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Přihlaste se Google účtem.")
     try:
-        info = id_token.verify_oauth2_token(authorization[7:], requests.Request(), client_id)
+        info = await run_in_threadpool(id_token.verify_oauth2_token, authorization[7:], requests.Request(), client_id)
     except Exception:
         raise HTTPException(401, "Google přihlášení není platné.")
     allowed = {x.strip().lower() for x in os.getenv("ALLOWED_EMAILS", "").split(",") if x.strip()}
-    if info.get("email", "").lower() not in allowed:
+    email = info.get("email", "").lower()
+    if info.get("email_verified") is not True:
+        raise HTTPException(401, "Google účet nemá ověřenou e-mailovou adresu.")
+    rule = repo.access_rules.get(email)
+    if rule and not GoogleSheetsRepository._bool(rule.get("active", False)):
+        raise HTTPException(403, "Přístup tohoto účtu byl zakázán.")
+    if not rule and (email not in allowed or email in disabled_users):
         raise HTTPException(403, "Tento e-mail nemá povolený přístup.")
-    email = info["email"].lower()
-    user = {"email": email, "role": user_roles.get(email, "user")}; active_user.set(user); return user
+    user = {"email": email, "role": str(rule["role"]) if rule else user_roles.get(email, "user")}
+    # Every project route is protected, including routes that only index repo
+    # dictionaries. Do not depend on a ContextVar changed in a sync worker.
+    project_id = request.path_params.get("project_id")
+    if project_id and (project_id not in repo.project_data or not can_view_project(project_id, user)):
+        raise HTTPException(404, "Projekt nebyl nalezen.")
+    active_user.set(user)
+    return user
 
 
 def require_admin(user=Depends(current_user)) -> dict:
@@ -92,8 +122,20 @@ def require_editor(user=Depends(current_user)) -> dict:
 
 
 def can_view_project(project_id: str, user: dict) -> bool:
+    if project_id not in repo.project_data: return False
     if user.get("role") == "admin": return True
     email = user.get("email", "").lower()
+    rule = repo.access_rules.get(email)
+    if rule:
+        if not GoogleSheetsRepository._bool(rule.get("active", False)): return False
+        if rule.get("scope") == "all": return True
+        if rule.get("scope") == "recipient":
+            return repo.project_data[project_id].recipient_name.strip().casefold() == str(rule.get("recipient_name", "")).strip().casefold()
+        ids = rule.get("project_ids", [])
+        if isinstance(ids, str):
+            try: ids = json.loads(ids)
+            except ValueError: return False
+        return project_id in ids
     project_only = PROJECT_ONLY_USERS.get(email)
     if project_only is not None:
         item = repo.project_data.get(project_id)
@@ -147,7 +189,10 @@ async def checked_file(upload: UploadFile, extension: str, mime: set[str]) -> by
 
 
 @app.get("/api/health")
-def health(): return {"status": "ok", "time": datetime.utcnow().isoformat()}
+def health():
+    if os.getenv("ENVIRONMENT") == "production" and google_repo is None:
+        raise HTTPException(503, "Trvalé úložiště není nakonfigurováno.")
+    return {"status": "ok", "storage": "google-sheets" if google_repo else "development-memory", "time": datetime.utcnow().isoformat()}
 
 
 @app.get("/api/me")
@@ -166,6 +211,47 @@ def google_picker_config(user=Depends(require_payroll_batch_access)):
 def get_projects(user=Depends(current_user)): return [p for p in repo.projects() if can_view_project(p.project_id, user)]
 
 
+@app.get("/api/admin/access")
+def access_settings(user=Depends(require_admin)):
+    emails = {value.strip().lower() for value in os.getenv("ALLOWED_EMAILS", "").split(",") if value.strip()}
+    emails.update(repo.access_rules)
+    emails.add(user["email"])
+    users = []
+    for email in sorted(emails):
+        rule = repo.access_rules.get(email)
+        role = str(rule["role"]) if rule else (user["role"] if email == user["email"] else user_roles.get(email, "user"))
+        active = GoogleSheetsRepository._bool(rule.get("active")) if rule else email not in disabled_users
+        visible = [p.project_id for p in repo.projects() if active and can_view_project(p.project_id, {"email": email, "role": role})]
+        if rule:
+            ids = rule.get("project_ids", [])
+            if isinstance(ids, str): ids = json.loads(ids or "[]")
+            scope, recipient = rule.get("scope", "projects"), rule.get("recipient_name", "")
+        else:
+            recipient = RECIPIENT_ONLY_USERS.get(email, "")
+            scope = "recipient" if recipient else "projects"
+            recipient = next((p.recipient_name for p in repo.projects() if p.recipient_name.strip().casefold() == recipient), recipient)
+            ids = visible
+        users.append({"email": email, "role": role, "active": active, "scope": scope, "project_ids": ids, "recipient_name": recipient, "visible_project_ids": visible})
+    return {"users": users, "projects": repo.projects()}
+
+
+@app.put("/api/admin/access/{email}")
+def save_access(email: str, rule: AccessRule, user=Depends(require_admin)):
+    email = email.strip().lower()
+    if email != rule.email.strip().lower(): raise HTTPException(422, "E-mail v požadavku se neshoduje.")
+    if email == user["email"] and (not rule.active or rule.role != "admin"):
+        raise HTTPException(422, "Nemůžete odebrat vlastní administrátorský přístup.")
+    if any(pid not in repo.project_data for pid in rule.project_ids): raise HTTPException(422, "Vybraný projekt neexistuje.")
+    if rule.scope == "recipient" and not rule.recipient_name.strip(): raise HTTPException(422, "Vyberte příjemce.")
+    record = {**rule.model_dump(), "email": email, "project_ids": json.dumps(rule.project_ids), "updated_at": datetime.utcnow().isoformat(), "updated_by": user["email"]}
+    if google_repo:
+        google_repo.delete_records("PRISTUPY", "email", email)
+        google_repo.append_records("PRISTUPY", [record])
+    repo.access_rules[email] = record
+    audit("", user, "ACCESS", f"Změna přístupu účtu {email}: {rule.role}, {rule.scope}, aktivní={rule.active}.")
+    return rule
+
+
 @app.post("/api/projects", status_code=201)
 def create_project(data: ProjectCreate, user=Depends(require_admin)):
     value = Project(**data.model_dump()); repo.save_project(value)
@@ -181,7 +267,8 @@ def get_project(project_id: str, user=Depends(current_user)): return project(pro
 @app.patch("/api/projects/{project_id}")
 def patch_project(project_id: str, changes: dict, user=Depends(require_admin)):
     allowed = {k: v for k, v in changes.items() if k in Project.model_fields}
-    value = project(project_id, user).model_copy(update=allowed)
+    allowed.pop("project_id", None)
+    value = Project.model_validate({**project(project_id, user).model_dump(), **allowed})
     value.updated_at = datetime.utcnow(); repo.save_project(value)
     if google_repo:
         google_repo.update_record("PROJEKTY", "project_id", project_id, {**allowed, "updated_at": value.updated_at})
@@ -234,11 +321,12 @@ def save_project_schedule(project_id: str, value: ProjectSchedule, user=Depends(
             "updated_at": now,
             "updated_by": user["email"],
         } for item in periods])
+    audit(project_id, user, "SCHEDULE", "Změna harmonogramu projektu a monitorovacích období.")
     return stored
 
 
 @app.post("/api/projects/{project_id}/budgets/analyze")
-async def analyze_budget(project_id: str, file: UploadFile = File(...), user=Depends(require_editor)):
+async def analyze_budget(project_id: str, file: UploadFile = File(...), user=Depends(require_admin)):
     project(project_id, user); data = await checked_file(file, ".xlsx", {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/octet-stream"})
     try: result = parse_budget(data, file.filename)
     except Exception as exc: raise HTTPException(422, str(exc))
@@ -247,7 +335,7 @@ async def analyze_budget(project_id: str, file: UploadFile = File(...), user=Dep
 
 
 @app.post("/api/projects/{project_id}/budgets/import")
-def import_budget(project_id: str, body: dict, user=Depends(require_editor)):
+def import_budget(project_id: str, body: dict, user=Depends(require_admin)):
     token = body.get("token"); cached = analyses.pop(token, None)
     if not cached or cached["kind"] != "budget" or cached["project_id"] != project_id: raise HTTPException(410, "Analýza vypršela nebo neexistuje.")
     result = cached["result"]
@@ -266,6 +354,7 @@ def import_budget(project_id: str, body: dict, user=Depends(require_editor)):
         google_repo.update_record("PROJEKTY", "project_id", project_id, {"total_budget": result.total_amount,
             "active_budget_version_id": version_id, "lump_sum_rate": p.lump_sum_rate, "lump_sum_base_code": p.lump_sum_base_code,
             "updated_at": now})
+    audit(project_id, user, "BUDGET", f"Nahrána verze rozpočtu {len(repo.budgets[project_id])}.", result.file_name, result.sha256)
     return {"version_id": version_id, "imported_items": len(result.items)}
 
 
@@ -402,6 +491,7 @@ def import_payment(project_id: str, body: dict, user=Depends(require_editor)):
         google_repo.append_records("ZADOSTI_O_PLATBU", [values])
         google_repo.append_records("RADKY_ZOP", [{**line.model_dump(), "payment_line_id": str(uuid4()),
             "payment_request_id": result.payment_request_id, "project_id": project_id} for line in result.lines])
+    audit(project_id, user, "PAYMENT", f"ŽoP {result.request_number}, verze {result.request_version}; do výpočtů vstupuje jen nejvyšší verze.", result.source_file_name, result.source_sha256)
     return result
 
 
@@ -414,13 +504,16 @@ async def import_financial_plan(project_id: str, file: UploadFile = File(...), u
     applied = _apply_financial_plan(project_id, plan)
     if not applied:
         raise HTTPException(422, "Finanční plán neobsahuje žádné pořadové číslo již importované ŽoP.")
+    audit(project_id, user, "FINANCIAL_PLAN", f"Finanční plán: aktualizováno {applied} žádostí.", plan["file_name"], plan["sha256"])
     return {"source_file_name": plan["file_name"], "updated_payment_requests": applied, "rows": plan["rows"]}
 
 
 @app.get("/api/projects/{project_id}/payment-requests")
 def payments(project_id: str, user=Depends(current_user)):
     p = project(project_id, user)
+    active_ids = {item.payment_request_id for item in active_payments(repo.payments[project_id])}
     return [{**item.model_dump(),
+             "active_revision": item.payment_request_id in active_ids,
              "financial_plan_provider_payment": (
                  _provider_payment_from_plan(item, p.public_funding_rate)
                  if item.financial_plan_coverage_actual is not None else None)}
@@ -514,10 +607,12 @@ SD2_PROJECT_CODE = "CZ.03.02.01/00/25_106/0006125"
 SD2_CODES = {"1.1.1.1", "1.1.1.2", "1.1.1.3", "1.1.2.1", "1.1.3.1"}
 
 
-def sd2_employment_type(code: str) -> str:
+def sd2_employment_type(code: str, previous: str | None = None, month: date | None = None) -> str:
     if code.startswith("1.1.2."):
         return "DPC"
     if code.startswith("1.1.3."):
+        if month and month.year <= 2024 and previous in {"DPPDo", "DPPNad"}:
+            return previous
         return "DPP"
     return "Smlouva"
 
@@ -599,6 +694,17 @@ def _mosty_payroll_rows(rows: list[dict], allowed: set[str]) -> list[dict]:
             "project_vacation_hours": project_vacation_hours,
             "component_description": note or source.get("component_description", ""),
         })
+        components = [row for row in group if row.get("component_code") == "M01"]
+        if source.get("component_code") == "M01" and (len(components) > 1 or person == normalized_name("Silvie Malíková")):
+            extra = target_wage - Decimal(str(source["component_amount"]))
+            value.update({
+                "requires_component_confirmation": True,
+                "selected_component_key": "",
+                "component_options": [{"key": str(row.get("component_occurrence")),
+                    "label": f'M01 {row.get("component_occurrence")}: {row.get("component_amount")} Kč — {row.get("component_description", "")}',
+                    "amount": Decimal(str(row["component_amount"])) + extra} for row in components],
+                "component_description": "Nutná kontrola M01: potvrďte projektovou složku podle mzdového podkladu; samotné pořadí ani částka úvazek neprokazují.",
+            })
         result.append(value)
 
     for (person, _, contract), group in groups.items():
@@ -612,8 +718,10 @@ def _mosty_payroll_rows(rows: list[dict], allowed: set[str]) -> list[dict]:
             final_row(group[0], "1.1.1.1", gross, fund, fund, gross, note="Celý pracovní poměr v projektu")
         elif person == normalized_name("Silvie Malíková") and contract == "ps":
             component = next((row for row in group if row.get("component_code") == "M01" and int(row.get("component_occurrence", 0)) == 3), None)
+            if not component:
+                component = next((row for row in group if row.get("component_code") == "M01"), None)
             if not component or not fund:
-                ignored(group); continue
+                raise HTTPException(422, "U Silvie Malíkové nelze určit složku M01 nebo fond pracovního poměru. Zkontrolujte mzdový podklad; import nebyl proveden.")
             bonus_components = [row for row in group if row.get("component_code") in {"C01", "M06"}
                                 or any(token in normalized_name(str(row.get("component_name", "")))
                                        for token in ("premie", "odmena", "bonus", "osobni ohodnoceni"))]
@@ -631,7 +739,7 @@ def _mosty_payroll_rows(rows: list[dict], allowed: set[str]) -> list[dict]:
             for occurrence, code, share in mapping:
                 component = next((row for row in group if row.get("component_code") == "M01" and int(row.get("component_occurrence", 0)) == occurrence), None)
                 if not component:
-                    continue
+                    raise HTTPException(422, "U Martiny Pírkové chybí některá ze tří mzdových složek M01. Ověřte rozdělení mezi pozice; import nebyl proveden.")
                 target = Decimal(str(component["component_amount"])) + (bonus * share).quantize(Decimal("0.01"))
                 hours = (full_fund * share).quantize(Decimal("0.01")); calculated = (gross / fund * hours).quantize(Decimal("0.01")) if fund else Decimal("0")
                 final_row(component, code, gross, fund, hours, target, target - calculated,
@@ -644,9 +752,62 @@ def _mosty_payroll_rows(rows: list[dict], allowed: set[str]) -> list[dict]:
 @app.get("/api/projects/{project_id}/sd2-monthly")
 def sd2_monthly(project_id: str, period: int, user=Depends(current_user)):
     selected_project = project(project_id, user)
-    entries = [entry for entry in repo.sd2_entries[project_id] if entry.monitoring_period == period]
+    entries = [entry.model_copy(deep=True) for entry in repo.sd2_entries[project_id] if entry.monitoring_period == period]
     enforce_sd2_subject(selected_project, entries)
     return entries
+
+
+def audit(project_id, user, action, message="", files="", sha=""):
+    record = {"import_id": str(uuid4()), "project_id": project_id, "import_type": action,
+              "source_file_name": files, "source_sha256": sha, "status": "saved", "message": message,
+              "created_at": datetime.utcnow().isoformat(), "created_by": user["email"]}
+    repo.import_log.append(record)
+    if google_repo: google_repo.append_records("IMPORT_LOG", [record])
+
+
+def backup_sd2(project_id, period, user, action):
+    entries = [entry for entry in repo.sd2_entries[project_id] if entry.monitoring_period == period]
+    records = snapshot_rows(project_id, period, entries, user, action)
+    repo.sd2_history.extend(records)
+    if google_repo: google_repo.append_records("SD2_HISTORIE", records)
+
+
+def check_sd2_revision(project_id, period, expected):
+    if google_repo and expected is None:
+        raise HTTPException(428, "Chybí kontrola verze období. Obnovte aplikaci a načtěte období znovu.")
+    if expected is not None and expected != revision([e for e in repo.sd2_entries[project_id] if e.monitoring_period == period]):
+        raise HTTPException(409, "Období mezitím upravil jiný uživatel. Obnovte data; vaše změny nebyly přepsány ani uloženy.")
+
+
+@app.get("/api/projects/{project_id}/sd2-state")
+def sd2_state(project_id: str, period: int, user=Depends(current_user)):
+    entries = sd2_monthly(project_id, period, user)
+    return {"entries": entries, "revision": revision([e for e in repo.sd2_entries[project_id] if e.monitoring_period == period])}
+
+
+@app.get("/api/projects/{project_id}/sd2-history")
+def sd2_history(project_id: str, period: int, user=Depends(current_user)):
+    project(project_id, user)
+    return [{k: v for k, v in item.items() if k != "entries"} for item in snapshots(repo.sd2_history, project_id, period)]
+
+
+@app.post("/api/projects/{project_id}/sd2-history/{snapshot_id}/restore")
+def restore_sd2(project_id: str, snapshot_id: str, period: int, body: dict, user=Depends(require_editor)):
+    project(project_id, user)
+    check_sd2_revision(project_id, period, body.get("revision"))
+    saved = next((row for row in snapshots(repo.sd2_history, project_id, period) if row["snapshot_id"] == snapshot_id), None)
+    if not saved: raise HTTPException(404, "Záloha období nebyla nalezena.")
+    if saved["entries"]:
+        return save_sd2_monthly(project_id, {"entries": saved["entries"], "revision": body.get("revision"), "action": "Obnovení období"}, user)
+    # Restoring an empty SD2 snapshot must not remove attachment metadata.
+    backup_sd2(project_id, period, user, "Obnovení prázdného období")
+    entries = [entry for entry in repo.sd2_entries[project_id] if entry.monitoring_period == period]
+    if google_repo:
+        for entry in entries:
+            google_repo.delete_record("SD2_MESICE", "sd2_entry_id", entry.sd2_entry_id)
+    repo.sd2_entries[project_id] = [entry for entry in repo.sd2_entries[project_id] if entry.monitoring_period != period]
+    audit(project_id, user, "SD2_RESTORE", f"Obnovení prázdného stavu MO{period}; přílohy zůstaly zachovány.")
+    return []
 
 
 @app.put("/api/projects/{project_id}/sd2-monthly")
@@ -657,10 +818,22 @@ def save_sd2_monthly(project_id: str, body: dict, user=Depends(require_editor)):
     if not entries or any(entry.budget_item_code not in allowed_codes for entry in entries):
         raise HTTPException(422, "Neplatná položka podkladu SD2.")
     for entry in entries:
-        entry.employment_type = sd2_employment_type(entry.budget_item_code)
+        entry.employment_type = sd2_employment_type(entry.budget_item_code, entry.employment_type, entry.month)
     enforce_sd2_subject(selected_project, entries)
     period = entries[0].monitoring_period
     if any(entry.monitoring_period != period for entry in entries): raise HTTPException(422, "Uložte najednou pouze jedno období.")
+    ids = [entry.sd2_entry_id for entry in entries]
+    other_ids = {entry.sd2_entry_id for pid, values in repo.sd2_entries.items() for entry in values
+                 if pid != project_id or entry.monitoring_period != period}
+    if len(ids) != len(set(ids)) or other_ids.intersection(ids):
+        raise HTTPException(422, "Duplicitní identifikátor záznamu SD2. Obnovte data a zkontrolujte řádky.")
+    check_sd2_revision(project_id, period, body.get("revision"))
+    for entry in entries:
+        if entry.month.day != 1 or entry.work_time_fund < 0 or entry.project_hours < 0 or entry.project_hours > entry.work_time_fund:
+            raise HTTPException(422, "Zkontrolujte měsíc a fond hodin; projektové hodiny nesmějí přesáhnout fond vztahu.")
+        if project_id in repo.project_schedules and _period_for_payroll_month(project_id, entry.month) != period:
+            raise HTTPException(422, "Některý měsíc nepatří do zvoleného období. Zkontrolujte harmonogram.")
+    backup_sd2(project_id, period, user, str(body.get("action", "Uložení SD2")))
     existing_period = [entry for entry in repo.sd2_entries[project_id] if entry.monitoring_period == period]
     if google_repo:
         for old_entry in existing_period:
@@ -669,12 +842,15 @@ def save_sd2_monthly(project_id: str, body: dict, user=Depends(require_editor)):
             "created_at": datetime.utcnow().isoformat(), "created_by": user["email"]} for entry in entries])
     repo.sd2_entries[project_id] = [entry for entry in repo.sd2_entries[project_id]
                                     if entry.monitoring_period != period] + entries
+    audit(project_id, user, "SD2", f"Uložení MO{period}: {len(entries)} záznamů.", ", ".join(sorted({e.source_file_name for e in entries if e.source_file_name})))
     return entries
 
 
 @app.delete("/api/projects/{project_id}/sd2-period", status_code=204)
-def delete_sd2_period(project_id: str, period: int, user=Depends(require_editor)):
+def delete_sd2_period(project_id: str, period: int, user=Depends(require_editor), revision: str | None = None):
     project(project_id, user)
+    check_sd2_revision(project_id, period, revision)
+    backup_sd2(project_id, period, user, "Smazání období")
     entries = [entry for entry in repo.sd2_entries[project_id] if entry.monitoring_period == period]
     attachments = [value for value in repo.sd2_attachments[project_id]
                    if int(value.get("monitoring_period", 0)) == period]
@@ -687,15 +863,16 @@ def delete_sd2_period(project_id: str, period: int, user=Depends(require_editor)
                                     if entry.monitoring_period != period]
     repo.sd2_attachments[project_id] = [value for value in repo.sd2_attachments[project_id]
                                         if int(value.get("monitoring_period", 0)) != period]
+    audit(project_id, user, "SD2_DELETE", f"Smazání údajů MO{period}; údaje SD2 lze obnovit z historie.")
 
 
 @app.get("/api/projects/{project_id}/sd2-xml")
 def download_sd2_xml(project_id: str, period: int, user=Depends(current_user)):
     selected_project = project(project_id, user)
-    entries = [entry for entry in repo.sd2_entries[project_id] if entry.monitoring_period == period]
+    entries = [entry.model_copy(deep=True) for entry in repo.sd2_entries[project_id] if entry.monitoring_period == period]
     enforce_sd2_subject(selected_project, entries)
     for entry in entries:
-        entry.employment_type = sd2_employment_type(entry.budget_item_code)
+        entry.employment_type = sd2_employment_type(entry.budget_item_code, entry.employment_type, entry.month)
     try:
         content = build_sd2_xml(entries)
     except ValueError as exc:
@@ -712,7 +889,7 @@ def create_sd2_xml(project_id: str, period: int, body: dict, user=Depends(curren
     if any(entry.budget_item_code not in allowed_codes for entry in entries):
         raise HTTPException(422, "XML obsahuje neplatnou rozpočtovou položku.")
     for entry in entries:
-        entry.employment_type = sd2_employment_type(entry.budget_item_code)
+        entry.employment_type = sd2_employment_type(entry.budget_item_code, entry.employment_type, entry.month)
     enforce_sd2_subject(selected_project, entries)
     if any(entry.monitoring_period != period for entry in entries):
         raise HTTPException(422, "XML lze vytvořit pouze pro jedno monitorovací období.")
@@ -801,15 +978,19 @@ def resolve_payroll_rows(selected_project: Project, rows: list[dict]) -> tuple[l
 async def analyze_payroll_slips(project_id: str, period: int, files: list[UploadFile] = File(...), user=Depends(require_editor)):
     selected_project = project(project_id, user)
     rows: list[dict] = []; insurance_rows: list[dict] = []; file_names: list[str] = []
+    hashes: set[str] = set()
     for file in files:
         if not file.filename or not file.filename.lower().endswith(".pdf"):
             raise HTTPException(415, "Vyberte pouze soubory PDF.")
         data = await file.read(MAX_SIZE + 1)
         if len(data) > MAX_SIZE:
             raise HTTPException(413, "Některý soubor je větší než povolených 20 MB.")
+        digest = hashlib.sha256(data).hexdigest()
+        if digest in hashes: continue
+        hashes.add(digest)
         file_names.append(file.filename)
         try:
-            rows.extend(parse_payroll_slips(data))
+            rows.extend({**row, "source_file_name": file.filename, "source_sha256": digest} for row in parse_payroll_slips(data))
         except ValueError:
             pass
         insurance_rows.extend(parse_payslip_insurance(data))
@@ -902,17 +1083,25 @@ def _analyze_payroll_batch_archive(data: bytes, user: dict) -> dict:
     archive_files = _payroll_archive_files(data)
     raw_groups: dict[tuple[str, str, int | None], dict] = {}
     unrecognized: list[dict] = []
+    seen_files: set[str] = set()
+    duplicates: list[str] = []
     for archive_path, content in archive_files:
         file_name = os.path.basename(archive_path)
         if not file_name.lower().endswith(".pdf"):
             unrecognized.append({"file_name": archive_path, "issue": "Soubor není PDF."})
             continue
+        file_hash = hashlib.sha256(content).hexdigest()
+        if file_hash in seen_files:
+            duplicates.append(archive_path)
+            continue
+        seen_files.add(file_hash)
         try:
             rows = parse_payroll_slips(content)
         except (ValueError, RuntimeError):
             unrecognized.append({"file_name": archive_path, "issue": "Výplatní pásku se nepodařilo přečíst."})
             continue
         for row in rows:
+            row.update(source_file_name=archive_path, source_sha256=file_hash)
             performance = str(row.get("performance_code", "")).strip()
             selected_project = _project_for_performance(performance)
             period = _period_for_payroll_month(selected_project.project_id, row["month"]) if selected_project else None
@@ -952,6 +1141,12 @@ def _analyze_payroll_batch_archive(data: bytes, user: dict) -> dict:
             unmatched = sorted({str(row.get("full_name", "")) for row in resolved_rows if not row.get("budget_item_code")})
             if unmatched:
                 issues.append("V Nastavení projektu chybí jednoznačné přiřazení: " + ", ".join(unmatched) + ".")
+            identities = set()
+            for row in resolved_rows:
+                identity = (normalized_name(str(row.get("full_name", ""))), str(row.get("month")), str(row.get("budget_item_code")), str(row.get("contract_name", "")))
+                if identity in identities:
+                    issues.append(f'Více podkladů pro stejného pracovníka, vztah a měsíc: {row.get("full_name")}. Vyberte platnou pásku; opravené a původní soubory nelze sčítat.')
+                identities.add(identity)
             bonuses = sorted({str(row.get("full_name", "")) for row in resolved_rows if Decimal(str(row.get("project_bonus_available", 0))) != 0})
             if bonuses:
                 issues.append("Páska obsahuje prémii vyžadující ruční kontrolu: " + ", ".join(bonuses) + ".")
@@ -970,11 +1165,12 @@ def _analyze_payroll_batch_archive(data: bytes, user: dict) -> dict:
             "files": group["files"], "file_hashes": group["file_hashes"], "rows": resolved_rows,
             "budget_items": [{"code": item.code, "name": item.name} for item in items],
             "issues": issues, "ready": not issues,
+            "revision": revision([e for e in repo.sd2_entries[selected_project.project_id] if e.monitoring_period == group["monitoring_period"]]) if selected_project and can_view_project(selected_project.project_id, user) else "",
         })
     groups.sort(key=lambda item: (item["project_name"], item["monitoring_period"] or 999))
     return {"groups": groups, "unrecognized": unrecognized,
             "ready_groups": sum(bool(group["ready"]) for group in groups),
-            "total_files": len(archive_files)}
+            "total_files": len(archive_files), "duplicates": duplicates}
 
 
 def _description_number(value: Decimal) -> str:
@@ -1017,6 +1213,7 @@ def _batch_entry(row: dict, period: int) -> Sd2MonthlyEntry:
         employment_type=employment, work_time_fund=row.get("work_time_fund", 0),
         project_hours=row.get("project_hours", row.get("worked_hours", 0)),
         description=_batch_description(row),
+        source_file_name=str(row.get("source_file_name", "")), source_sha256=str(row.get("source_sha256", "")), source_key=str(row.get("source_key", "")),
     )
 
 
@@ -1031,7 +1228,7 @@ async def analyze_payroll_batch(file: UploadFile = File(...), user=Depends(requi
 
 
 @app.post("/api/payroll-batch/import")
-async def import_payroll_batch(file: UploadFile = File(...), user=Depends(require_payroll_batch_access)):
+async def import_payroll_batch(file: UploadFile = File(...), user=Depends(require_payroll_batch_access), revisions: str | None = Header(default=None, alias="X-SD2-Revisions")):
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(415, "Vyberte ZIP s výplatními páskami.")
     data = await file.read(50 * 1024 * 1024 + 1)
@@ -1042,8 +1239,13 @@ async def import_payroll_batch(file: UploadFile = File(...), user=Depends(requir
     if not ready:
         raise HTTPException(422, "V archivu není žádná skupina připravená k bezpečnému uložení.")
     imported_entries = 0
+    try: expected = json.loads(revisions) if revisions else {}
+    except ValueError: raise HTTPException(422, "Neplatná kontrola verzí období.")
+    if not isinstance(expected, dict): raise HTTPException(422, "Neplatná kontrola verzí období.")
     for group in ready:
         project_id = str(group["project_id"]); period = int(group["monitoring_period"])
+        check_sd2_revision(project_id, period, expected.get(f"{project_id}:{period}"))
+        backup_sd2(project_id, period, user, "Hromadný import ZIP")
         entries = [_batch_entry(row, period) for row in group["rows"]]
         enforce_sd2_subject(repo.project_data[project_id], entries)
         keys = {(entry.month, entry.budget_item_code,
@@ -1051,6 +1253,10 @@ async def import_payroll_batch(file: UploadFile = File(...), user=Depends(requir
         existing = repo.sd2_entries[project_id]
         replaced = [entry for entry in existing if (entry.month, entry.budget_item_code,
                     normalized_name(f"{entry.first_name} {entry.last_name}")) in keys]
+        for entry in entries:
+            old = next((e for e in replaced if e.month == entry.month and e.budget_item_code == entry.budget_item_code and normalized_name(f"{e.first_name} {e.last_name}") == normalized_name(f"{entry.first_name} {entry.last_name}")), None)
+            if old:
+                entry.sd2_entry_id, entry.external_id = old.sd2_entry_id, old.external_id
         if google_repo:
             for old_entry in replaced:
                 google_repo.delete_record("SD2_MESICE", "sd2_entry_id", old_entry.sd2_entry_id)
@@ -1059,6 +1265,8 @@ async def import_payroll_batch(file: UploadFile = File(...), user=Depends(requir
         replaced_ids = {entry.sd2_entry_id for entry in replaced}
         repo.sd2_entries[project_id] = [entry for entry in existing if entry.sd2_entry_id not in replaced_ids] + entries
         imported_entries += len(entries)
+        group["revision"] = revision([entry for entry in repo.sd2_entries[project_id] if entry.monitoring_period == period])
+        audit(project_id, user, "PAYROLL_ZIP", f"MO{period}: {len(entries)} záznamů; nahrazeno {len(replaced)}.", ", ".join(group["files"]), hashlib.sha256(data).hexdigest())
     return {**result, "imported_groups": len(ready),
             "imported_projects": len({str(group["project_id"]) for group in ready}),
             "imported_entries": imported_entries}
@@ -1112,7 +1320,7 @@ def record_sd2_attachment(project_id: str, period: int, value: Sd2AttachmentReco
 
 @app.get("/api/projects/{project_id}/dashboard")
 def dashboard(project_id: str, user=Depends(current_user)):
-    p = project(project_id); active = [x for x in repo.payments[project_id] if not x.is_advance_payment]
+    p = project(project_id, user); active = [x for x in active_payments(repo.payments[project_id]) if not x.is_advance_payment and is_approved(x)]
     direct = sum((x.approved_direct_costs for x in active), Decimal("0")); ls = sum((x.approved_lump_sum for x in active), Decimal("0")); spent = direct + ls
     ls_budget = next((i.total_amount for b in repo.budgets[project_id] for i in b["analysis"].items if b["version_id"] == p.active_budget_version_id and i.category == "lump_sum"), Decimal("0"))
     own_rate = Decimal("1") - p.public_funding_rate
@@ -1138,8 +1346,8 @@ def budget_status(project_id: str, version_id: str | None = None, user=Depends(c
     items = version["analysis"].items; by_code = {item.code: item for item in items}
     spent: dict[str, Decimal] = {code: Decimal("0") for code in by_code}; periods: dict[str, dict[str, Decimal]] = {code: {} for code in by_code}
     months: dict[str, dict[str, dict[str, Decimal]]] = {code: {} for code in by_code}
-    for payment in repo.payments[project_id]:
-        if payment.is_advance_payment: continue
+    for payment in active_payments(repo.payments[project_id]):
+        if payment.is_advance_payment or not is_approved(payment): continue
         period = str(max(1, payment.sequence_number - 1))
         for line in payment.lines:
             code = line.budget_item_code or ""
@@ -1152,7 +1360,7 @@ def budget_status(project_id: str, version_id: str | None = None, user=Depends(c
         if lump_item:
             spent[lump_item.code] += payment.approved_lump_sum
             periods[lump_item.code][period] = periods[lump_item.code].get(period, Decimal("0")) + payment.approved_lump_sum
-    submitted_periods = {max(1, payment.sequence_number - 1) for payment in repo.payments[project_id] if not payment.is_advance_payment}
+    submitted_periods = {max(1, payment.sequence_number - 1) for payment in active_payments(repo.payments[project_id]) if not payment.is_advance_payment and is_approved(payment)}
     for entry in repo.sd2_entries[project_id]:
         if entry.budget_item_code not in spent:
             continue
@@ -1239,11 +1447,11 @@ def save_worker_assignments(project_id: str, body: dict, user=Depends(require_ed
             fte = Decimal(str(fte_raw)) if str(fte_raw or "").strip() else None
             amount = Decimal(str(amount_raw)) if str(amount_raw or "").strip() else None
         except Exception as exc:
-            raise HTTPException(422, "ProjektovĂ˝ Ăşvazek a mzdovĂˇ sloĹľka musĂ­ bĂ˝t ÄŤĂ­sla.") from exc
+            raise HTTPException(422, "Projektový úvazek a mzdová složka musí být čísla.") from exc
         if fte is not None and not Decimal("0") <= fte <= Decimal("1"):
-            raise HTTPException(422, "ProjektovĂ˝ Ăşvazek musĂ­ bĂ˝t od 0 do 1.")
+            raise HTTPException(422, "Projektový úvazek musí být od 0 do 1.")
         if amount is not None and amount < 0:
-            raise HTTPException(422, "MzdovĂˇ sloĹľka nesmĂ­ bĂ˝t zĂˇpornĂˇ.")
+            raise HTTPException(422, "Mzdová složka nesmí být záporná.")
         if code:
             for name in names:
                 records.append({"worker_assignment_id": str(uuid4()), "project_id": project_id,
@@ -1256,11 +1464,12 @@ def save_worker_assignments(project_id: str, body: dict, user=Depends(require_ed
         google_repo.delete_records("PRACOVNICI_ROZPOCTU", "project_id", project_id)
         if records:
             google_repo.append_records("PRACOVNICI_ROZPOCTU", records)
+    audit(project_id, user, "WORKERS", f"Změna přiřazení pracovníků: {len(records)} řádků.")
     return records
 
 
 @app.post("/api/projects/{project_id}/budget-change/analyze")
-async def analyze_budget_change(project_id: str, file: UploadFile = File(...), user=Depends(require_editor)):
+async def analyze_budget_change(project_id: str, file: UploadFile = File(...), user=Depends(require_admin)):
     p = project(project_id); data = await checked_file(file, ".xlsx", {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/octet-stream"})
     try: result = parse_budget(data, file.filename)
     except Exception as exc: raise HTTPException(422, str(exc))
@@ -1285,7 +1494,7 @@ async def analyze_budget_change(project_id: str, file: UploadFile = File(...), u
 
 
 @app.post("/api/projects/{project_id}/budget-change/import")
-def import_budget_change(project_id: str, body: dict, user=Depends(require_editor)):
+def import_budget_change(project_id: str, body: dict, user=Depends(require_admin)):
     cached = analyses.get(body.get("token"))
     if not cached or cached["kind"] != "budget_change": raise HTTPException(410, "Analýza změnového rozpočtu vypršela.")
     p = project(project_id); current = next(b["analysis"] for b in repo.budgets[project_id] if b["version_id"] == p.active_budget_version_id)
@@ -1299,7 +1508,7 @@ def import_budget_change(project_id: str, body: dict, user=Depends(require_edito
 
 
 @app.post("/api/projects/{project_id}/change-proposals/generate")
-def generate_proposal(project_id: str, body: dict, user=Depends(require_editor)):
+def generate_proposal(project_id: str, body: dict, user=Depends(require_admin)):
     project(project_id)
     # Přesouvat lze pouze mezi skutečnými koncovými položkami přímých
     # výdajů. Součtové/informační řádky (např. kód 3), paušál a
@@ -1361,13 +1570,11 @@ def _normalized_status(value: str) -> str:
 
 
 def _payment_is_approved(payment) -> bool:
-    status = _normalized_status(f"{payment.state} {payment.processing_state}")
-    return any(marker in status for marker in ("proplacena", "vyporadana", "schvalena"))
+    return is_approved(payment)
 
 
 def _payment_is_paid(payment) -> bool:
-    status = _normalized_status(f"{payment.state} {payment.processing_state}")
-    return any(marker in status for marker in ("proplacena", "vyporadana"))
+    return is_paid(payment)
 
 
 def _settlement_breakdown(project_id: str, user: dict) -> dict:
@@ -1378,7 +1585,7 @@ def _settlement_breakdown(project_id: str, user: dict) -> dict:
     received = initial_advance = Decimal("0")
     final_requests = []
 
-    for payment in sorted(repo.payments[project_id], key=lambda item: item.sequence_number):
+    for payment in sorted(active_payments(repo.payments[project_id]), key=lambda item: item.sequence_number):
         approved = _payment_is_approved(payment)
         paid = _payment_is_paid(payment)
         declared_direct = payment.declared_direct_costs
@@ -1467,7 +1674,8 @@ def download_final_settlement(project_id: str, user=Depends(current_user)):
 
 
 @app.get("/api/import-log")
-def import_log(user=Depends(current_user)): return repo.import_log
+def import_log(user=Depends(current_user)):
+    return [item for item in repo.import_log if user.get("role") == "admin" or can_view_project(str(item.get("project_id", "")), user)]
 
 
 static_dir = os.path.join(os.path.dirname(__file__), "static")

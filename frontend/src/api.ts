@@ -36,7 +36,8 @@ async function authenticatedFetch(path: string, init?: RequestInit) {
           ...init?.headers,
         },
       });
-      if (response.status === 401) expireAuthentication();
+      // An older in-flight request must not log out a newly authenticated user.
+      if (response.status === 401 && localStorage.getItem("opz_google_token") === token) expireAuthentication();
       if (canRetry && TRANSIENT_STATUSES.has(response.status) && attempt < WAKE_RETRY_DELAYS.length) {
         await sleep(WAKE_RETRY_DELAYS[attempt++]);
         continue;
