@@ -22,7 +22,8 @@ export function mergePayroll(existing: Sd2Entry[], incoming: Sd2Entry[]) {
   // Replacing one person's slip must never remove their colleagues' records.
   return [...existing.filter(entry => !keys.has(entryKey(entry))), ...incoming.map(entry => {
     const old = existing.find(saved => entryKey(saved) === entryKey(entry));
-    return { ...entry, sd2_entry_id: old?.sd2_entry_id, external_id: old?.external_id };
+    return { ...entry, payment_date: entry.payment_date ?? old?.payment_date ?? null,
+      sd2_entry_id: old?.sd2_entry_id, external_id: old?.external_id };
   })];
 }
 function ratio(value: number | undefined): [bigint, bigint] {

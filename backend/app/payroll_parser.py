@@ -418,6 +418,12 @@ def parse_payslip_insurance(data: bytes) -> list[dict]:
                 contract_end = contract_labels[contract_position + 1] if contract_position + 1 < len(contract_labels) else len(section)
                 contract_name = section[label_index - 1] if label_index else ""
                 block = section[label_index:contract_end]
+                worked_hours = None
+                if "Odpracováno" in block:
+                    index = block.index("Odpracováno") + 2
+                    worked = re.fullmatch(r"([\d.,]+)\s*h(?:od)?\.?", block[index], re.IGNORECASE) if index < len(block) else None
+                    if worked:
+                        worked_hours = _line_amount(worked.group(1))
                 amounts: list[Decimal] = []
                 for label in ("Sociální zaměstnavatel", "Zdravotní zaměstnavatel"):
                     try:
@@ -435,9 +441,9 @@ def parse_payslip_insurance(data: bytes) -> list[dict]:
                     vacation_hours = _number(re.sub(r"\s*h(?:od)?\.?$", "", vacation_value, flags=re.IGNORECASE))
                 except (ValueError, StopIteration):
                     pass
-                if amounts or vacation_hours:
+                if amounts or vacation_hours or worked_hours is not None:
                     results.append({"full_name": full_name, "first_name": first_name, "last_name": last_name,
                                     "month": month.isoformat(), "contract_name": contract_name,
-                                    "employer_insurance": sum(amounts, Decimal("0")),
-                                    "vacation_hours": vacation_hours})
+                                    "employer_insurance": sum(amounts, Decimal("0")) if amounts else None,
+                                    "vacation_hours": vacation_hours, "worked_hours": worked_hours})
     return results

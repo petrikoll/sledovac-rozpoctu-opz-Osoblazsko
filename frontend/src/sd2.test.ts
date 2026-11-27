@@ -27,7 +27,8 @@ test("odvody u DPP nejsou při uložení vynulovány", () => {
 test("nová páska nahradí jen jednoho pracovníka a zachová stabilní XML ID", () => {
   const colleague = entry({ sd2_entry_id: "colleague", first_name: "Petr" });
   const june = entry({ sd2_entry_id: "june", month: "2026-06-01" });
-  const result = mergePayroll([entry(), colleague, june], [entry({ gross_wage: 70000, sd2_entry_id: undefined, external_id: undefined })]);
+  const result = mergePayroll([entry({ payment_date: "2026-06-15" }), colleague, june], [entry({ gross_wage: 70000, sd2_entry_id: undefined, external_id: undefined, payment_date: null })]);
+  expect(result.find(item => item.gross_wage === 70000)?.payment_date).toBe("2026-06-15");
   expect(result).toHaveLength(3);
   expect(result).toContainEqual(colleague);
   expect(result).toContainEqual(june);
