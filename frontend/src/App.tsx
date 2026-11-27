@@ -1449,7 +1449,7 @@ function Sd2MonthlyDialogNew({ id, period, projectCode, projectName, onClose }: 
     });
     setPayrollEntries(mergePayroll(makeEntries(), individualEntries));
     setChanges({});
-    setPayrollPreview(null); setUploadNotice("Údaje z výplatních listů byly načteny. Doplňte datum úhrady a zkontrolujte projektové hodiny."); window.setTimeout(() => setUploadNotice(""), 9000);
+    setPayrollPreview(null); setUploadNotice("Mzdové údaje byly převzaty. Datum úhrady můžete doplnit později."); window.setTimeout(() => setUploadNotice(""), 9000);
   }
   async function connectDrive() {
     setError("");
@@ -1490,7 +1490,7 @@ function Sd2MonthlyDialogNew({ id, period, projectCode, projectName, onClose }: 
     {payrollPreview && <section className="payroll-preview">
       <div className="payroll-preview-head"><div><h3>Kontrola načtených výplatních listů</h3><p>U nalezené prémie rozhodněte, zda patří do projektu. Výchozí volba ji do projektu nezahrne.</p></div><button type="button" className="secondary" onClick={() => setPayrollPreview(null)}>Zrušit</button></div>
       <div className="table-wrap"><table><thead><tr><th>Pracovník</th><th>Pracovní vztah</th><th>Mzdová složka</th><th>Měsíc</th><th>Částka</th><th>Prémie do projektu</th><th>Pojistné</th><th>Fond</th><th>Hodiny projektu</th><th>Rozpočtová položka</th></tr></thead><tbody>
-        {payrollPreview.rows.map((row, index) => <tr key={row.source_key || `${row.page_number}-${index}`}>
+        {payrollPreview.rows.map((row, index) => <tr key={row.source_key ? `${row.source_sha256 || ""}:${row.source_key}` : `${row.page_number}-${index}`}>
           <td><b>{row.full_name}</b><small>{row.position_name}</small></td><td>{row.contract_name || row.category}<small>{row.employment_type}</small></td><td>{row.component_name || "Hrubá mzda"}<small>{row.component_description}</small></td><td>{new Date(`${row.month}T00:00:00Z`).toLocaleDateString("cs-CZ", { month: "long", year: "numeric" })}<small>{row.payment_date ? `Úhrada: ${new Date(`${row.payment_date}T00:00:00Z`).toLocaleDateString("cs-CZ")}` : "Datum úhrady nenalezeno"}</small></td><td>{czk.format(row.component_amount ?? row.gross_wage)}{row.requires_component_confirmation && <label>Ověřit projektovou složku<select aria-label="Projektová složka M01" value={row.selected_component_key || ""} onChange={e => {
             const option = row.component_options?.find(item => item.key === e.target.value);
             setPayrollPreview(previous => previous && ({ ...previous, rows: previous.rows.map((item, i) => i !== index ? item : { ...item, selected_component_key: e.target.value, component_amount: option ? Number(option.amount) : item.component_amount, employer_contributions: option ? Math.round(Number(option.amount) * Number(item.employer_contribution_rate ?? 0.338) * 100) / 100 : item.employer_contributions }) }));

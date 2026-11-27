@@ -149,6 +149,32 @@ def test_mosty_malikova_bonus_is_offered_but_excluded_by_default():
     assert result[0]["project_vacation_hours"] == Decimal("4.00")
 
 
+def test_mosty_keeps_new_project_contract_for_budget_assignment():
+    from app.main import _mosty_payroll_rows
+
+    base = {
+        "first_name": "Eva", "last_name": "Nová", "month": "2026-09-01",
+        "contract_name": "DPP Mosty v rodině", "employment_type": "DPP",
+        "contract_gross": Decimal("5000"), "contract_employer_insurance": Decimal("0"),
+        "work_time_fund": Decimal("10"), "worked_hours": Decimal("10"),
+    }
+    rows = [
+        {**base, "source_key": "a", "component_code": "M01", "component_amount": Decimal("4000")},
+        {**base, "source_key": "b", "component_code": "M06", "component_amount": Decimal("1000")},
+        {**base, "source_key": "c", "contract_name": "DPP jiný projekt"},
+    ]
+
+    result = _mosty_payroll_rows(rows, {"1.1.3.1"})
+
+    project_rows = [row for row in result if row["match_status"] != "ignored"]
+    assert len(project_rows) == 1
+    assert project_rows[0]["match_status"] == "unmatched"
+    assert project_rows[0]["gross_wage"] == Decimal("5000")
+    assert project_rows[0]["project_hours"] == Decimal("10")
+    assert project_rows[0]["employer_contributions"] == Decimal("0")
+    assert project_rows[0].get("payment_date") is None
+
+
 def test_srssjesenik_can_only_view_jesenicko_project():
     jesenicko = client.post("/api/projects", json={
         "project_code": "CZ.03.02.01/00/24_065/0004961",

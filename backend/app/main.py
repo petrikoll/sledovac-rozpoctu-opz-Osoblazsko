@@ -657,7 +657,7 @@ def sd2_xml_content_disposition(selected_project: Project, period: int) -> str:
     return f'attachment; filename="SD-2_MO{period}.xml"; filename*=UTF-8\'\'{quote(file_name)}'
 
 
-def _mosty_payroll_rows(rows: list[dict], allowed: set[str]) -> list[dict]:
+def _mosty_payroll_rows(rows: list[dict], allowed: set[str], assignment_rules: dict[str, list[dict]] | None = None) -> list[dict]:
     """Convert payroll-list components into final SD-2 records for Mosty v rodině."""
     groups: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
     for row in rows:
@@ -673,7 +673,8 @@ def _mosty_payroll_rows(rows: list[dict], allowed: set[str]) -> list[dict]:
 
     def final_row(source: dict, code: str, gross: Decimal, fund: Decimal, hours: Decimal,
                   target_wage: Decimal, correction: Decimal = Decimal("0"), note: str = "",
-                  project_bonus_available: Decimal = Decimal("0"), project_bonus_label: str = "") -> None:
+                  project_bonus_available: Decimal = Decimal("0"), project_bonus_label: str = "",
+                  confirm_component: bool = True) -> None:
         value = dict(source)
         exact_insurance = source.get("contract_employer_insurance")
         insurance_rate = (Decimal(str(exact_insurance)) / gross
@@ -695,7 +696,7 @@ def _mosty_payroll_rows(rows: list[dict], allowed: set[str]) -> list[dict]:
             "component_description": note or source.get("component_description", ""),
         })
         components = [row for row in group if row.get("component_code") == "M01"]
-        if source.get("component_code") == "M01" and (len(components) > 1 or person == normalized_name("Silvie Malíková")):
+        if confirm_component and source.get("component_code") == "M01" and (len(components) > 1 or person == normalized_name("Silvie Malíková")):
             extra = target_wage - Decimal(str(source["component_amount"]))
             value.update({
                 "requires_component_confirmation": True,
@@ -744,6 +745,23 @@ def _mosty_payroll_rows(rows: list[dict], allowed: set[str]) -> list[dict]:
                 hours = (full_fund * share).quantize(Decimal("0.01")); calculated = (gross / fund * hours).quantize(Decimal("0.01")) if fund else Decimal("0")
                 final_row(component, code, gross, fund, hours, target, target - calculated,
                           f'Projektový podíl {int(share * 100)} % včetně podílu osobního ohodnocení')
+        elif "mosty v rodine" in contract:
+            # A named project contract belongs in the preview even before its budget item is configured.
+            # Auto-fill only an explicit, unambiguous rule for the whole contract.
+            codes = {rule["budget_item_code"] for rule in (assignment_rules or {}).get(person, [])
+                     if rule["budget_item_code"] in allowed
+                     and rule["contract_contains"] and normalized_name(rule["contract_contains"]) == contract
+                     and not rule.get("payroll_component_amount")
+                     and rule.get("project_fte") in (None, 1)}
+            code = next(iter(codes)) if len(codes) == 1 else ""
+            source = {**group[0], "component_name": "Hrubá mzda pracovního vztahu"}
+            if source.get("employment_type") in {"DPC", "DPP", "DPPDo", "DPPNad"}:
+                slip_hours = source.get("contract_worked_hours")
+                fund = Decimal(str(slip_hours)) if slip_hours is not None else max(
+                    (Decimal(str(row.get("worked_hours", 0))) for row in group), default=fund)
+            final_row(source, code, gross, fund, fund, gross,
+                      note="Celý pracovní vztah v projektu" if code else "Vyberte rozpočtovou položku pro tento pracovní vztah.",
+                      confirm_component=False)
         else:
             ignored(group)
     return result
@@ -923,7 +941,7 @@ def resolve_payroll_rows(selected_project: Project, rows: list[dict]) -> tuple[l
     items = sd2_budget_items(selected_project.project_id)
     allowed = {item.code for item in items}
     if normalized_name(selected_project.project_name) == normalized_name("Mosty v rodině"):
-        return _mosty_payroll_rows(rows, allowed), items
+        return _mosty_payroll_rows(rows, allowed, assignment_rules), items
     contracts_by_person: dict[str, set[str]] = defaultdict(set)
     for row in rows:
         person = normalized_name(f'{row.get("first_name", "")} {row.get("last_name", "")}')
@@ -1001,7 +1019,10 @@ async def analyze_payroll_slips(project_id: str, period: int, files: list[Upload
         key = (normalized_name(f'{row.get("first_name", "")} {row.get("last_name", "")}'), row["month"], normalized_name(str(row.get("contract_name", ""))))
         payslip = payslip_by_key.get(key)
         if payslip:
-            row["contract_employer_insurance"] = payslip.get("employer_insurance", 0)
+            if payslip.get("employer_insurance") is not None:
+                row["contract_employer_insurance"] = payslip["employer_insurance"]
+            if payslip.get("worked_hours") is not None:
+                row["contract_worked_hours"] = payslip["worked_hours"]
             row["vacation_hours"] = payslip.get("vacation_hours", row.get("vacation_hours", 0))
             fund = Decimal(str(row.get("work_time_fund", 0)))
             full_fund = Decimal(str(row.get("full_time_fund", 0)))
